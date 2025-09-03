@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./head2head-backend
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./head2head-backend:/app
+    environment:
+      FLASK_APP: run.py
+      FLASK_ENV: development
+
+  frontend:
+    build:
+      context: ./head2head-frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    #volumes:
+    #  - ./head2head-frontend:/app
+    command: sh -c "npm install && npm start"
+    environment:
+      CHOKIDAR_USEPOLLING: "true"  # Watches file changes on Docker-for-Windows/Mac
