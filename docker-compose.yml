@@ -1,6 +1,18 @@
 version: '3.8'
 
 services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    ports:
+      - "5432:5432"  # optional: expose DB to host tools
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+
   backend:
     build:
       context: ./head2head-backend
@@ -12,6 +24,10 @@ services:
     environment:
       FLASK_APP: run.py
       FLASK_ENV: development
+      DATABASE_URL: postgresql+psycopg2://app:app@db:5432/app
+    depends_on:
+      - db
+    command: sh -c "python wait_for_db.py && flask run --host=0.0.0.0"
 
   frontend:
     build:
@@ -24,3 +40,6 @@ services:
     command: sh -c "npm install && npm start"
     environment:
       CHOKIDAR_USEPOLLING: "true"  # Watches file changes on Docker-for-Windows/Mac
+
+volumes:
+  pg_data:
