@@ -13,6 +13,8 @@ function App() {
   const [myGroups, setMyGroups] = useState([]);
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [groupDetails, setGroupDetails] = useState(null);
+  const [winnerId, setWinnerId] = useState('');
+  const [loserId, setLoserId] = useState('');
 
   const onChange = (e) => {
     const { name, value } = e.target;
@@ -217,6 +219,38 @@ function App() {
     } catch {}
   };
 
+  const recordMatch = async (e) => {
+    e.preventDefault();
+    if (!user || !selectedGroup) return;
+    if (!winnerId || !loserId) {
+      setStatus({ type: 'error', message: 'Pick a winner and a loser' });
+      return;
+    }
+    if (winnerId === loserId) {
+      setStatus({ type: 'error', message: 'Winner and loser must be different' });
+      return;
+    }
+    try {
+      const res = await fetch(`/api/groups/${selectedGroup}/matches`, {
+        method: 'POST',
+        headers: headersWithUser(user.id),
+        body: JSON.stringify({ winner_id: Number(winnerId), loser_id: Number(loserId) }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setStatus({ type: 'error', message: data.error || 'Failed to record match' });
+        return;
+      }
+      setStatus({ type: 'success', message: 'Match recorded and ELO updated' });
+      setWinnerId('');
+      setLoserId('');
+      fetchGroup(user.id, selectedGroup);
+      fetchMyGroups(user.id);
+    } catch (e1) {
+      setStatus({ type: 'error', message: 'Network error recording match' });
+    }
+  };
+
   return (
     <div className="min-h-screen">
       {/* Header */}
@@ -378,7 +412,10 @@ function App() {
                       {groupDetails.members?.length ? (
                         <ul className="mt-2 space-y-1">
                           {groupDetails.members.map((m) => (
-                            <li key={m.id} className="text-slate-300">{m.username} <span className="text-slate-500">— {m.role}</span></li>
+                            <li key={m.id} className="text-slate-300 flex justify-between">
+                              <span>{m.username} <span className="text-slate-500">— {m.role}</span></span>
+                              <span className="text-brand-400 font-semibold">ELO {m.elo}</span>
+                            </li>
                           ))}
                         </ul>
                       ) : <p className="text-slate-400">No members</p>}
@@ -391,6 +428,36 @@ function App() {
                           <input value={inviteInput} onChange={(e) => setInviteInput(e.target.value)} className="flex-1 rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100" />
                           <button onClick={inviteToGroup} className="px-3 py-2 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-100">Invite</button>
                         </div>
+                      </div>
+                    )}
+
+                    {/* Record Match */}
+                    {selectedGroup && (
+                      <div>
+                        <h4 className="font-semibold">Record Match</h4>
+                        <form onSubmit={recordMatch} className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2 items-end">
+                          <div>
+                            <label className="block text-sm text-slate-300">Winner</label>
+                            <select value={winnerId} onChange={(e) => setWinnerId(e.target.value)} className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100">
+                              <option value="">Select winner</option>
+                              {groupDetails.members?.map((m) => (
+                                <option key={m.id} value={m.id}>{m.username}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-sm text-slate-300">Loser</label>
+                            <select value={loserId} onChange={(e) => setLoserId(e.target.value)} className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100">
+                              <option value="">Select loser</option>
+                              {groupDetails.members?.map((m) => (
+                                <option key={m.id} value={m.id}>{m.username}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <button type="submit" className="w-full sm:w-auto px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white">Record</button>
+                          </div>
+                        </form>
                       </div>
                     )}
                   </div>

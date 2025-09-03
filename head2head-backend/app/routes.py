@@ -3,7 +3,7 @@ from sqlalchemy import or_
 from datetime import datetime
 
 from app import db
-from app.models import User, Group, Membership, Invite
+from app.models import User, Group, Membership, Invite, Ranking, Match
 
 
 bp = Blueprint('api', __name__)
@@ -129,6 +129,10 @@ def create_group():
 
     owner = Membership(user_id=me.id, group_id=group.id, role='owner')
     db.session.add(owner)
+    # Ensure owner has an initial ELO ranking
+    db.session.flush()
+    if not Ranking.query.filter_by(user_id=me.id, group_id=group.id).first():
+        db.session.add(Ranking(user_id=me.id, group_id=group.id, points=1000))
 
     # Prepare invites
     created_invites = []
@@ -198,19 +202,18 @@ def get_group(group_id: int):
         return jsonify({'ok': False, 'error': 'Forbidden'}), 403
 
     members = (
-        db.session.query(User, Membership)
+        db.session.query(User, Membership, Ranking)
         .join(Membership, Membership.user_id == User.id)
+        .outerjoin(Ranking, (Ranking.user_id == User.id) & (Ranking.group_id == group.id))
         .filter(Membership.group_id == group.id)
         .all()
     )
-    members_payload = [
-        {
-            'id': u.id,
-            'username': u.username,
-            'role': m.role,
-        }
-        for (u, m) in members
-    ]
+    members_payload = []
+    for (u, m, r) in members:
+        elo = r.points if r and r.points is not None else 1000
+        members_payload.append({'id': u.id, 'username': u.username, 'role': m.role, 'elo': elo})
+    # Sort by ELO desc
+    members_payload.sort(key=lambda x: x['elo'], reverse=True)
     return jsonify({
         'ok': True,
         'group': {
@@ -346,6 +349,9 @@ def respond_invite(invite_id: int):
         # Make member if not already
         if not Membership.query.filter_by(user_id=me.id, group_id=inv.group_id).first():
             db.session.add(Membership(user_id=me.id, group_id=inv.group_id, role='member'))
+            # Also ensure an initial ELO ranking
+            if not Ranking.query.filter_by(user_id=me.id, group_id=inv.group_id).first():
+                db.session.add(Ranking(user_id=me.id, group_id=inv.group_id, points=1000))
         inv.status = 'accepted'
         inv.responded_at = datetime.utcnow()
     else:
@@ -354,6 +360,62 @@ def respond_invite(invite_id: int):
 
     db.session.commit()
     return jsonify({'ok': True, 'invite': {'id': inv.id, 'status': inv.status}}), 200
+
+
+@bp.route('/groups/<int:group_id>/matches', methods=['POST'])
+def record_match(group_id: int):
+    me = _current_user()
+    if not me:
+        return jsonify({'ok': False, 'error': 'Unauthorized'}), 401
+
+    group = Group.query.get_or_404(group_id)
+    # Must be a member to record
+    if not Membership.query.filter_by(user_id=me.id, group_id=group.id).first():
+        return jsonify({'ok': False, 'error': 'Forbidden'}), 403
+
+    payload = request.get_json(silent=True) or {}
+    winner_id = payload.get('winner_id')
+    loser_id = payload.get('loser_id')
+    if not isinstance(winner_id, int) or not isinstance(loser_id, int):
+        return jsonify({'ok': False, 'error': 'winner_id and loser_id are required'}), 400
+    if winner_id == loser_id:
+        return jsonify({'ok': False, 'error': 'Winner and loser must be different'}), 400
+
+    # Validate both are members
+    win_mem = Membership.query.filter_by(user_id=winner_id, group_id=group.id).first()
+    lose_mem = Membership.query.filter_by(user_id=loser_id, group_id=group.id).first()
+    if not win_mem or not lose_mem:
+        return jsonify({'ok': False, 'error': 'Both users must be members of the group'}), 400
+
+    # Load or create rankings
+    win_rank = Ranking.query.filter_by(user_id=winner_id, group_id=group.id).first()
+    if not win_rank:
+        win_rank = Ranking(user_id=winner_id, group_id=group.id, points=1000)
+        db.session.add(win_rank)
+    lose_rank = Ranking.query.filter_by(user_id=loser_id, group_id=group.id).first()
+    if not lose_rank:
+        lose_rank = Ranking(user_id=loser_id, group_id=group.id, points=1000)
+        db.session.add(lose_rank)
+
+    ra = float(win_rank.points or 1000)
+    rb = float(lose_rank.points or 1000)
+    k = 32.0
+    expected_a = 1.0 / (1.0 + 10.0 ** ((rb - ra) / 400.0))
+    expected_b = 1.0 / (1.0 + 10.0 ** ((ra - rb) / 400.0))
+    # Winner score=1, loser score=0
+    new_ra = round(ra + k * (1.0 - expected_a))
+    new_rb = round(rb + k * (0.0 - expected_b))
+
+    win_rank.points = int(new_ra)
+    lose_rank.points = int(new_rb)
+    db.session.add(Match(group_id=group.id, winner_id=winner_id, loser_id=loser_id))
+    db.session.commit()
+
+    return jsonify({
+        'ok': True,
+        'winner': {'id': winner_id, 'elo': win_rank.points},
+        'loser': {'id': loser_id, 'elo': lose_rank.points},
+    }), 201
 @bp.route('/compare', methods=['POST'])
 def compare():
     data = request.json

@@ -59,7 +59,8 @@ class Ranking(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     group_id = db.Column(db.Integer, db.ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True)
     rank = db.Column(db.Integer, nullable=True)
-    points = db.Column(db.Integer, nullable=True)
+    # Use `points` as the ELO rating for simplicity; default 1000
+    points = db.Column(db.Integer, nullable=False, default=1000)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     user = db.relationship("User", back_populates="rankings")
@@ -84,3 +85,13 @@ class Invite(db.Model):
     __table_args__ = (
         UniqueConstraint("group_id", "invitee_id", name="uq_invite_group_invitee"),
     )
+
+
+class Match(db.Model):
+    __tablename__ = "matches"
+
+    id = db.Column(db.Integer, primary_key=True)
+    group_id = db.Column(db.Integer, db.ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True)
+    winner_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    loser_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
