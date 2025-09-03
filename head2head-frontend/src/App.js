@@ -5,6 +5,7 @@ function App() {
   const [status, setStatus] = useState(null);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [user, setUser] = useState(null);
+  const [showSignup, setShowSignup] = useState(false);
   const [groupForm, setGroupForm] = useState({ name: '', sport: '' });
   const [inviteInput, setInviteInput] = useState('');
   const [pendingInvites, setPendingInvites] = useState([]); // usernames to invite when creating
@@ -41,8 +42,11 @@ function App() {
         setStatus({ type: 'error', message: msg });
         return;
       }
-      setStatus({ type: 'success', message: `User created: ${data.user.username}` });
+      setStatus({ type: 'success', message: `Welcome, ${data.user.username}` });
+      setUser(data.user); // auto sign-in after account creation
       setForm({ username: '', email: '', password: '' });
+      fetchMyGroups(data.user.id);
+      fetchInbox(data.user.id);
     } catch (err) {
       console.error(err);
       setStatus({ type: 'error', message: 'Network error creating user' });
@@ -73,6 +77,19 @@ function App() {
       console.error(err);
       setStatus({ type: 'error', message: 'Network error signing in' });
     }
+  };
+
+  const signOut = () => {
+    setUser(null);
+    setMyGroups([]);
+    setInbox([]);
+    setSelectedGroup(null);
+    setGroupDetails(null);
+    setGroupForm({ name: '', sport: '' });
+    setPendingInvites([]);
+    setInviteInput('');
+    setStatus(null);
+    setShowSignup(false);
   };
 
   const headersWithUser = (uid) => ({ 'Content-Type': 'application/json', 'X-User-Id': String(uid) });
@@ -201,217 +218,230 @@ function App() {
 
   return (
     <div style={{ maxWidth: 900, margin: '48px auto', padding: 16, fontFamily: 'system-ui, sans-serif' }}>
-      <h1>{user ? `Hello ${user.username}` : 'Welcome'}</h1>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-        <section>
-          <h2 style={{ marginTop: 0 }}>Create Account</h2>
-      <form onSubmit={onSubmit}>
-        <div style={{ marginBottom: 12 }}>
-          <label>
-            Username
-            <input
-              name="username"
-              value={form.username}
-              onChange={onChange}
-              required
-              style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }}
-            />
-          </label>
-        </div>
-        <div style={{ marginBottom: 12 }}>
-          <label>
-            Email
-            <input
-              type="email"
-              name="email"
-              value={form.email}
-              onChange={onChange}
-              placeholder="optional"
-              style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }}
-            />
-          </label>
-        </div>
-        <div style={{ marginBottom: 12 }}>
-          <label>
-            Password
-            <input
-              type="password"
-              name="password"
-              value={form.password}
-              onChange={onChange}
-              required
-              minLength={6}
-              style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }}
-            />
-          </label>
-        </div>
-        <button type="submit" style={{ padding: '8px 12px' }}>Create Account</button>
-      </form>
-        </section>
-
-        <section>
-          <h2 style={{ marginTop: 0 }}>Sign In</h2>
-          <form onSubmit={onLogin}>
-            <div style={{ marginBottom: 12 }}>
-              <label>
-                Username
-                <input
-                  name="username"
-                  value={loginForm.username}
-                  onChange={onLoginChange}
-                  required
-                  style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }}
-                />
-              </label>
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              <label>
-                Password
-                <input
-                  type="password"
-                  name="password"
-                  value={loginForm.password}
-                  onChange={onLoginChange}
-                  required
-                  style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }}
-                />
-              </label>
-            </div>
-            <button type="submit" style={{ padding: '8px 12px' }}>Sign In</button>
-          </form>
-        </section>
-      </div>
-
-      {user && (
-        <div style={{ marginTop: 32, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-          <section>
-            <h2 style={{ marginTop: 0 }}>Create Group</h2>
-            <form onSubmit={createGroup}>
-              <div style={{ marginBottom: 8 }}>
+      {!user ? (
+        <div style={{ maxWidth: 420, margin: '0 auto' }}>
+          <h1 style={{ marginBottom: 8 }}>{showSignup ? 'Create Account' : 'Sign In'}</h1>
+          {!showSignup ? (
+            <form onSubmit={onLogin}>
+              <div style={{ marginBottom: 12 }}>
                 <label>
-                  Group Name
+                  Username
                   <input
-                    name="name"
-                    value={groupForm.name}
-                    onChange={(e) => setGroupForm((f) => ({ ...f, name: e.target.value }))}
+                    name="username"
+                    value={loginForm.username}
+                    onChange={onLoginChange}
                     required
                     style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }}
                   />
                 </label>
               </div>
-              <div style={{ marginBottom: 8 }}>
+              <div style={{ marginBottom: 12 }}>
                 <label>
-                  Group Sport
+                  Password
                   <input
-                    name="sport"
-                    value={groupForm.sport}
-                    onChange={(e) => setGroupForm((f) => ({ ...f, sport: e.target.value }))}
+                    type="password"
+                    name="password"
+                    value={loginForm.password}
+                    onChange={onLoginChange}
                     required
                     style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }}
                   />
                 </label>
               </div>
-              <div style={{ marginBottom: 8 }}>
-                <label>
-                  Invite by username
-                  <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                    <input value={inviteInput} onChange={(e) => setInviteInput(e.target.value)} style={{ flex: 1, padding: 8 }} />
-                    <button type="button" onClick={addPendingInvite}>Add</button>
-                  </div>
-                </label>
-                {pendingInvites.length > 0 && (
-                  <div style={{ marginTop: 8, fontSize: 14 }}>
-                    To invite: {pendingInvites.join(', ')}
-                  </div>
-                )}
-              </div>
-              <button type="submit" style={{ padding: '8px 12px' }}>Create Group</button>
+              <button type="submit" style={{ padding: '8px 12px' }}>Sign In</button>
             </form>
-          </section>
-
-          <section>
-            <h2 style={{ marginTop: 0 }}>Invites Inbox</h2>
-            {inbox.length === 0 ? (
-              <p>No pending invites</p>
-            ) : (
-              <ul>
-                {inbox.map((inv) => (
-                  <li key={inv.id} style={{ marginBottom: 8 }}>
-                    {inv.group?.name} ({inv.group?.sport}) — invited by {inv.inviter?.username}
-                    <div style={{ display: 'inline-flex', gap: 8, marginLeft: 8 }}>
-                      <button onClick={() => respondInvite(inv.id, 'accept')}>Accept</button>
-                      <button onClick={() => respondInvite(inv.id, 'decline')}>Decline</button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </div>
-      )}
-
-      {user && (
-        <div style={{ marginTop: 32, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
-          <section>
-            <h2 style={{ marginTop: 0 }}>My Groups</h2>
-            {myGroups.length === 0 ? <p>No groups yet</p> : (
-              <ul>
-                {myGroups.map((g) => (
-                  <li key={g.id}>
-                    <button onClick={() => { setSelectedGroup(g.id); fetchGroup(user.id, g.id); }} style={{ padding: 0, border: 'none', background: 'none', color: 'blue', cursor: 'pointer' }}>
-                      {g.name} ({g.sport}) — {g.role}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <section>
-            <h2 style={{ marginTop: 0 }}>Group Info</h2>
-            {!selectedGroup || !groupDetails ? (
-              <p>Select a group to view details</p>
-            ) : (
-              <div>
-                <div style={{ marginBottom: 8 }}>
-                  <label>
-                    Name
-                    <input value={groupDetails.name} onChange={(e) => setGroupDetails((gd) => ({ ...gd, name: e.target.value }))} disabled={groupDetails.my_role !== 'owner'} style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }} />
-                  </label>
-                </div>
-                <div style={{ marginBottom: 8 }}>
-                  <label>
-                    Sport
-                    <input value={groupDetails.sport} onChange={(e) => setGroupDetails((gd) => ({ ...gd, sport: e.target.value }))} disabled={groupDetails.my_role !== 'owner'} style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }} />
-                  </label>
-                </div>
-                {groupDetails.my_role === 'owner' && (
-                  <button onClick={updateGroup} style={{ marginBottom: 12 }}>Save</button>
-                )}
-
-                <h3>Members</h3>
-                {groupDetails.members?.length ? (
-                  <ul>
-                    {groupDetails.members.map((m) => (
-                      <li key={m.id}>{m.username} — {m.role}</li>
-                    ))}
-                  </ul>
-                ) : <p>No members</p>}
-
-                {groupDetails.my_role === 'owner' && (
-                  <div style={{ marginTop: 12 }}>
-                    <h4>Invite Friend</h4>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <input value={inviteInput} onChange={(e) => setInviteInput(e.target.value)} style={{ flex: 1, padding: 8 }} />
-                      <button onClick={inviteToGroup}>Invite</button>
-                    </div>
-                  </div>
-                )}
+          ) : (
+            <form onSubmit={onSubmit}>
+              <div style={{ marginBottom: 12 }}>
+                <label>
+                  Username
+                  <input
+                    name="username"
+                    value={form.username}
+                    onChange={onChange}
+                    required
+                    style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }}
+                  />
+                </label>
               </div>
+              <div style={{ marginBottom: 12 }}>
+                <label>
+                  Email
+                  <input
+                    type="email"
+                    name="email"
+                    value={form.email}
+                    onChange={onChange}
+                    placeholder="optional"
+                    style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }}
+                  />
+                </label>
+              </div>
+              <div style={{ marginBottom: 12 }}>
+                <label>
+                  Password
+                  <input
+                    type="password"
+                    name="password"
+                    value={form.password}
+                    onChange={onChange}
+                    required
+                    minLength={6}
+                    style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }}
+                  />
+                </label>
+              </div>
+              <button type="submit" style={{ padding: '8px 12px' }}>Create Account</button>
+            </form>
+          )}
+          <div style={{ marginTop: 12 }}>
+            {!showSignup ? (
+              <button type="button" onClick={() => setShowSignup(true)} style={{ padding: 0, border: 'none', background: 'none', color: 'blue', cursor: 'pointer' }}>
+                Don’t have an account? Create one here
+              </button>
+            ) : (
+              <button type="button" onClick={() => setShowSignup(false)} style={{ padding: 0, border: 'none', background: 'none', color: 'blue', cursor: 'pointer' }}>
+                Already have an account? Sign in
+              </button>
             )}
-          </section>
+          </div>
         </div>
+      ) : (
+        <>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h1 style={{ margin: 0 }}>Hello {user.username}</h1>
+            <button onClick={signOut}>Sign Out</button>
+          </div>
+          <div style={{ marginTop: 24, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+            <section>
+              <h2 style={{ marginTop: 0 }}>Create Group</h2>
+              <form onSubmit={createGroup}>
+                <div style={{ marginBottom: 8 }}>
+                  <label>
+                    Group Name
+                    <input
+                      name="name"
+                      value={groupForm.name}
+                      onChange={(e) => setGroupForm((f) => ({ ...f, name: e.target.value }))}
+                      required
+                      style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }}
+                    />
+                  </label>
+                </div>
+                <div style={{ marginBottom: 8 }}>
+                  <label>
+                    Group Sport
+                    <input
+                      name="sport"
+                      value={groupForm.sport}
+                      onChange={(e) => setGroupForm((f) => ({ ...f, sport: e.target.value }))}
+                      required
+                      style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }}
+                    />
+                  </label>
+                </div>
+                <div style={{ marginBottom: 8 }}>
+                  <label>
+                    Invite by username
+                    <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                      <input value={inviteInput} onChange={(e) => setInviteInput(e.target.value)} style={{ flex: 1, padding: 8 }} />
+                      <button type="button" onClick={addPendingInvite}>Add</button>
+                    </div>
+                  </label>
+                  {pendingInvites.length > 0 && (
+                    <div style={{ marginTop: 8, fontSize: 14 }}>
+                      To invite: {pendingInvites.join(', ')}
+                    </div>
+                  )}
+                </div>
+                <button type="submit" style={{ padding: '8px 12px' }}>Create Group</button>
+              </form>
+            </section>
+
+            <section>
+              <h2 style={{ marginTop: 0 }}>Invites Inbox</h2>
+              {inbox.length === 0 ? (
+                <p>No pending invites</p>
+              ) : (
+                <ul>
+                  {inbox.map((inv) => (
+                    <li key={inv.id} style={{ marginBottom: 8 }}>
+                      {inv.group?.name} ({inv.group?.sport}) — invited by {inv.inviter?.username}
+                      <div style={{ display: 'inline-flex', gap: 8, marginLeft: 8 }}>
+                        <button onClick={() => respondInvite(inv.id, 'accept')}>Accept</button>
+                        <button onClick={() => respondInvite(inv.id, 'decline')}>Decline</button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
+
+          <div style={{ marginTop: 32, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+            <section>
+              <h2 style={{ marginTop: 0 }}>My Groups</h2>
+              {myGroups.length === 0 ? <p>No groups yet</p> : (
+                <ul>
+                  {myGroups.map((g) => (
+                    <li key={g.id}>
+                      <button onClick={() => { setSelectedGroup(g.id); fetchGroup(user.id, g.id); }} style={{ padding: 0, border: 'none', background: 'none', color: 'blue', cursor: 'pointer' }}>
+                        {g.name} ({g.sport}) — {g.role}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section>
+              <h2 style={{ marginTop: 0 }}>Group Info</h2>
+              {!selectedGroup || !groupDetails ? (
+                <p>Select a group to view details</p>
+              ) : (
+                <div>
+                  <div style={{ marginBottom: 8 }}>
+                    <label>
+                      Name
+                      <input value={groupDetails.name} onChange={(e) => setGroupDetails((gd) => ({ ...gd, name: e.target.value }))} disabled={groupDetails.my_role !== 'owner'} style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }} />
+                    </label>
+                  </div>
+                  <div style={{ marginBottom: 8 }}>
+                    <label>
+                      Sport
+                      <input value={groupDetails.sport} onChange={(e) => setGroupDetails((gd) => ({ ...gd, sport: e.target.value }))} disabled={groupDetails.my_role !== 'owner'} style={{ display: 'block', width: '100%', padding: 8, marginTop: 4 }} />
+                    </label>
+                  </div>
+                  {groupDetails.my_role === 'owner' && (
+                    <button onClick={updateGroup} style={{ marginBottom: 12 }}>Save</button>
+                  )}
+
+                  <h3>Members</h3>
+                  {groupDetails.members?.length ? (
+                    <ul>
+                      {groupDetails.members.map((m) => (
+                        <li key={m.id}>{m.username} — {m.role}</li>
+                      ))}
+                    </ul>
+                  ) : <p>No members</p>}
+
+                  {groupDetails.my_role === 'owner' && (
+                    <div style={{ marginTop: 12 }}>
+                      <h4>Invite Friend</h4>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <input value={inviteInput} onChange={(e) => setInviteInput(e.target.value)} style={{ flex: 1, padding: 8 }} />
+                        <button onClick={inviteToGroup}>Invite</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </section>
+          </div>
+        </>
       )}
+
+      
 
       {status && (
         <p style={{ marginTop: 12, color: status.type === 'error' ? 'crimson' : status.type === 'success' ? 'green' : 'inherit' }}>
