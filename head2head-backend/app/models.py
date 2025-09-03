@@ -28,6 +28,7 @@ class Group(db.Model):
 
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), unique=True, nullable=False, index=True)
+    sport = db.Column(db.String(80), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     memberships = db.relationship("Membership", back_populates="group", cascade="all, delete-orphan")
@@ -66,4 +67,20 @@ class Ranking(db.Model):
 
     __table_args__ = (
         UniqueConstraint("user_id", "group_id", name="uq_ranking_user_group"),
+    )
+
+
+class Invite(db.Model):
+    __tablename__ = "invites"
+
+    id = db.Column(db.Integer, primary_key=True)
+    group_id = db.Column(db.Integer, db.ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True)
+    inviter_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    invitee_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    status = db.Column(db.String(20), nullable=False, default="pending")  # pending | accepted | declined | canceled
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    responded_at = db.Column(db.DateTime, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("group_id", "invitee_id", name="uq_invite_group_invitee"),
     )
