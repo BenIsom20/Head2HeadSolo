@@ -1,8 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Tabs } from './components';
+import { Card, Button, Tabs, Toast } from './components';
 import logo from './logo-head2head.svg';
 
 function App() {
+  // API base + helper for proxy-less calls
+  const API_BASE = process.env.REACT_APP_API_BASE_URL || (window.location.hostname === 'localhost' ? 'http://localhost:5000' : '');
+  const apiUrl = (p) => `${API_BASE}/api${p}`;
+  const apiFetch = (p, opts) => fetch(apiUrl(p), opts);
   const SPORT_OPTIONS = [
     { label: '🏀 Basketball', value: 'Basketball' },
     { label: '⚽ Soccer (Football)', value: 'Soccer (Football)' },
@@ -31,6 +35,12 @@ function App() {
 
   const [form, setForm] = useState({ username: '', email: '', password: '' });
   const [status, setStatus] = useState(null);
+  const [toast, setToast] = useState(null);
+  const notify = (kind, message) => {
+    setToast({ kind, message });
+    window.clearTimeout(notify._t);
+    notify._t = window.setTimeout(() => setToast(null), 2500);
+  };
   const [token, setToken] = useState(() => localStorage.getItem('token') || '');
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [user, setUser] = useState(null);
@@ -48,15 +58,14 @@ function App() {
   const [editCustomSport, setEditCustomSport] = useState('');
   const [createTeamSize, setCreateTeamSize] = useState(1);
   const [editTeamSize, setEditTeamSize] = useState(1);
-  const [winnerId, setWinnerId] = useState('');
-  const [loserId, setLoserId] = useState('');
+  // legacy 1v1 states no longer used
   const [isTie, setIsTie] = useState(false);
   const [transferToId, setTransferToId] = useState('');
   const [teamSize, setTeamSize] = useState(1);
   const [teamAIds, setTeamAIds] = useState([]);
   const [teamBIds, setTeamBIds] = useState([]);
   const [winnerTeam, setWinnerTeam] = useState(1); // 1 or 2
-  const [groupTab, setGroupTab] = useState('overview'); // overview | matches | members | settings
+  const [groupTab, setGroupTab] = useState('leaderboard'); // leaderboard | matches | members | settings
   const [teamAScore, setTeamAScore] = useState('');
   const [teamBScore, setTeamBScore] = useState('');
   // FFA state
@@ -98,6 +107,7 @@ function App() {
         return;
       }
       setStatus({ type: 'success', message: `Welcome, ${data.user.username}` });
+      notify('success', `Welcome, ${data.user.username}`);
       if (data.token) { localStorage.setItem('token', data.token); setToken(data.token); }
       setUser(data.user); // auto sign-in after account creation
       setForm({ username: '', email: '', password: '' });
@@ -121,10 +131,12 @@ function App() {
       const data = await res.json();
       if (!res.ok) {
         setStatus({ type: 'error', message: data?.error || 'Failed to sign in' });
+        notify('error', data?.error || 'Failed to sign in');
         return;
       }
       if (data.token) { localStorage.setItem('token', data.token); setToken(data.token); }
       setUser(data.user);
+      notify('success', `Signed in as ${data.user.username}`);
       setStatus({ type: 'success', message: `Signed in as ${data.user.username}` });
       setLoginForm({ username: '', password: '' });
       // Load my groups and invites after login
@@ -155,7 +167,7 @@ function App() {
     localStorage.removeItem('token');
   };
 
-  const headersWithUser = (uid) => ({ 'Content-Type': 'application/json', 'X-User-Id': String(uid) });
+  // headersWithUser no longer used; using Bearer tokens via headersAuth()
   const headersAuth = () => {
     const h = { 'Content-Type': 'application/json' };
     if (token) h['Authorization'] = `Bearer ${token}`;
@@ -261,7 +273,7 @@ function App() {
   const respondInvite = async (inviteId, action) => {
     if (!user) return;
     try {
-      const res = await fetch(`/api/invites/${inviteId}/respond`, {
+      const res = await apiFetch(`/invites/${inviteId}/respond`, {
         method: 'POST',
         headers: headersAuth(),
         body: JSON.stringify({ action }),
@@ -269,13 +281,16 @@ function App() {
       const data = await res.json();
       if (res.ok) {
         setStatus({ type: 'success', message: `Invite ${action}ed` });
+        notify('success', `Invite ${action}ed`);
         fetchInbox(user.id);
         fetchMyGroups(user.id);
       } else {
         setStatus({ type: 'error', message: data.error || 'Failed to respond' });
+        notify('error', data.error || 'Failed to respond');
       }
     } catch {
       setStatus({ type: 'error', message: 'Network error' });
+      notify('error', 'Network error');
     }
   };
 
@@ -308,7 +323,7 @@ function App() {
       }
     }
     try {
-      const res = await fetch('/api/groups', {
+      const res = await apiFetch('/groups', {
         method: 'POST',
         headers: headersAuth(),
         body: JSON.stringify({ name: groupForm.name, sport, default_team_size: dts, invitees: pendingInvites }),
@@ -316,9 +331,11 @@ function App() {
       const data = await res.json();
       if (!res.ok) {
         setStatus({ type: 'error', message: data.error || 'Failed to create group' });
+        notify('error', data.error || 'Failed to create group');
         return;
       }
       setStatus({ type: 'success', message: `Created group ${data.group.name}` });
+      notify('success', `Created group ${data.group.name}`);
       setGroupForm({ name: '' });
       setCreateSportSelect('');
       setCreateSportCustom('');
@@ -335,7 +352,7 @@ function App() {
     e.preventDefault();
     if (!user || !selectedGroup) return;
     try {
-      const res = await fetch(`/api/groups/${selectedGroup}`, {
+      const res = await apiFetch(`/groups/${selectedGroup}`, {
         method: 'PATCH',
         headers: headersAuth(),
         body: JSON.stringify({ name: groupDetails.name, sport: groupDetails.sport, default_team_size: editTeamSize }),
@@ -343,10 +360,12 @@ function App() {
       const data = await res.json();
       if (res.ok) {
         setStatus({ type: 'success', message: 'Group updated' });
+        notify('success', 'Group updated');
         fetchGroup(user.id, selectedGroup);
         fetchMyGroups(user.id);
       } else {
         setStatus({ type: 'error', message: data.error || 'Update failed' });
+        notify('error', data.error || 'Update failed');
       }
     } catch {}
   };
@@ -357,7 +376,7 @@ function App() {
     if (!u) return;
     if (!window.confirm(`Invite ${u} to group?`)) return;
     try {
-      const res = await fetch(`/api/groups/${selectedGroup}/invites`, {
+      const res = await apiFetch(`/groups/${selectedGroup}/invites`, {
         method: 'POST',
         headers: headersAuth(),
         body: JSON.stringify({ username: u }),
@@ -365,9 +384,11 @@ function App() {
       const data = await res.json();
       if (res.ok) {
         setStatus({ type: 'success', message: `Invited ${u}` });
+        notify('success', `Invited ${u}`);
         setInviteInput('');
       } else {
         setStatus({ type: 'error', message: data.error || 'Invite failed' });
+        notify('error', data.error || 'Invite failed');
       }
     } catch {}
   };
@@ -428,7 +449,7 @@ function App() {
       if (sb !== undefined) body.score_b = sb;
     }
     try {
-      const res = await fetch(`/api/groups/${selectedGroup}/matches`, {
+      const res = await apiFetch(`/groups/${selectedGroup}/matches`, {
         method: 'POST',
         headers: headersAuth(),
         body: JSON.stringify(body),
@@ -436,9 +457,11 @@ function App() {
       const data = await res.json();
       if (!res.ok) {
         setStatus({ type: 'error', message: data.error || 'Failed to record match' });
+        notify('error', data.error || 'Failed to record match');
         return;
       }
       setStatus({ type: 'success', message: isFFA ? 'FFA recorded and ELO updated' : (isTie ? 'Tie recorded and ELO updated' : 'Match recorded and ELO updated') });
+      notify('success', isFFA ? 'FFA recorded and ELO updated' : (isTie ? 'Tie recorded and ELO updated' : 'Match recorded and ELO updated'));
       if (isFFA) {
         setFfaParticipants(Array.from({ length: ffaParticipantCount }, () => ''));
         setFfaSingleWinner(false);
@@ -469,7 +492,7 @@ function App() {
     }
     if (!window.confirm('Transfer ownership?')) return;
     try {
-      const res = await fetch(`/api/groups/${selectedGroup}/transfer-ownership`, {
+      const res = await apiFetch(`/groups/${selectedGroup}/transfer-ownership`, {
         method: 'POST',
         headers: headersAuth(),
         body: JSON.stringify({ new_owner_id: id }),
@@ -477,14 +500,17 @@ function App() {
       const data = await res.json();
       if (res.ok) {
         setStatus({ type: 'success', message: 'Ownership transferred' });
+        notify('success', 'Ownership transferred');
         setTransferToId('');
         fetchGroup(user.id, selectedGroup);
         fetchMyGroups(user.id);
       } else {
         setStatus({ type: 'error', message: data.error || 'Failed to transfer ownership' });
+        notify('error', data.error || 'Failed to transfer ownership');
       }
     } catch {
       setStatus({ type: 'error', message: 'Network error' });
+      notify('error', 'Network error');
     }
   };
 
@@ -492,21 +518,24 @@ function App() {
     if (!user || !selectedGroup) return;
     if (!window.confirm('Leave this group?')) return;
     try {
-      const res = await fetch(`/api/groups/${selectedGroup}/leave`, {
+      const res = await apiFetch(`/groups/${selectedGroup}/leave`, {
         method: 'POST',
         headers: headersAuth(),
       });
       const data = await res.json();
       if (res.ok) {
         setStatus({ type: 'success', message: 'Left group' });
+        notify('success', 'Left group');
         setSelectedGroup(null);
         setGroupDetails(null);
         fetchMyGroups(user.id);
       } else {
         setStatus({ type: 'error', message: data.error || 'Failed to leave group' });
+        notify('error', data.error || 'Failed to leave group');
       }
     } catch {
       setStatus({ type: 'error', message: 'Network error' });
+      notify('error', 'Network error');
     }
   };
 
@@ -532,6 +561,9 @@ function App() {
 
       {/* Content */}
       <main className="container-narrow py-8">
+        {toast && (
+          <Toast kind={toast.kind} message={toast.message} onClose={() => setToast(null)} />)
+        }
         {!user ? (
           <div className="max-w-md mx-auto">
             <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-6 shadow-lg">
@@ -581,8 +613,7 @@ function App() {
         ) : (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <section className="bg-slate-900/60 border border-slate-800 rounded-xl p-6 shadow">
-                <h2 className="text-lg font-semibold mb-4">Create Group</h2>
+              <Card header="Create Group">
                 <form onSubmit={createGroup} className="space-y-4">
                   <div>
                     <label className="block text-sm text-slate-300">Group Name</label>
@@ -634,12 +665,11 @@ function App() {
                       <p className="mt-2 text-sm text-slate-400">To invite: {pendingInvites.join(', ')}</p>
                     )}
                   </div>
-                  <button type="submit" className="px-4 py-2 rounded-md bg-brand-600 hover:bg-brand-500 text-white">Create Group</button>
+                  <Button type="submit" variant="primary">Create Group</Button>
                 </form>
-              </section>
+              </Card>
 
-              <section className="bg-slate-900/60 border border-slate-800 rounded-xl p-6 shadow">
-                <h2 className="text-lg font-semibold mb-4">Invites Inbox</h2>
+              <Card header="Invites Inbox">
                 {inbox.length === 0 ? (
                   <p className="text-slate-400">No pending invites</p>
                 ) : (
@@ -651,19 +681,18 @@ function App() {
                           <div className="text-slate-400 text-sm">invited by {inv.inviter?.username}</div>
                         </div>
                         <div className="flex gap-2">
-                          <button onClick={() => respondInvite(inv.id, 'accept')} className="px-3 py-1.5 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white text-sm">Accept</button>
-                          <button onClick={() => respondInvite(inv.id, 'decline')} className="px-3 py-1.5 rounded-md bg-rose-600 hover:bg-rose-500 text-white text-sm">Decline</button>
+                          <Button onClick={() => respondInvite(inv.id, 'accept')} variant="success" className="text-sm">Accept</Button>
+                          <Button onClick={() => respondInvite(inv.id, 'decline')} variant="danger" className="text-sm">Decline</Button>
                         </div>
                       </li>
                     ))}
                   </ul>
                 )}
-              </section>
+              </Card>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
-              <section className="bg-slate-900/60 border border-slate-800 rounded-xl p-6 shadow">
-                <h2 className="text-lg font-semibold mb-4">My Groups</h2>
+              <Card header="My Groups">
                 {myGroups.length === 0 ? (
                   <p className="text-slate-400">No groups yet</p>
                 ) : (
@@ -678,17 +707,16 @@ function App() {
                     ))}
                   </ul>
                 )}
-              </section>
+              </Card>
 
-              <section className="bg-slate-900/60 border border-slate-800 rounded-xl p-6 shadow">
-                <h2 className="text-lg font-semibold mb-4">Group Info</h2>
+              <Card header="Group Info">
                 {selectedGroup && groupDetails && (
                   <div className="mb-2">
                     <Tabs
                       value={groupTab}
                       onChange={setGroupTab}
                       tabs={[
-                        { value: 'overview', label: 'Overview' },
+                        { value: 'leaderboard', label: 'Leaderboard' },
                         { value: 'matches', label: 'Matches' },
                         { value: 'members', label: 'Members' },
                         { value: 'settings', label: 'Settings' },
@@ -700,11 +728,27 @@ function App() {
                   <p className="text-slate-400">Select a group to view details</p>
                 ) : (
                   <div className="space-y-4">
-                    {groupTab === 'overview' && (
-                      <div className="space-y-2 text-slate-300">
-                        <div>Name: <span className="text-slate-100 font-medium">{groupDetails.name}</span></div>
-                        <div>Sport: <span className="text-slate-100 font-medium">{groupDetails.sport}</span></div>
-                        <div>Members: <span className="text-slate-100 font-medium">{groupDetails.members?.length || 0}</span></div>
+                    {groupTab === 'leaderboard' && (
+                      <div>
+                        <h3 className="font-semibold">Leaderboard</h3>
+                        {groupDetails.members?.length ? (
+                          <ul className="mt-2 space-y-1">
+                            {groupDetails.members.map((m, idx) => (
+                              <li key={m.id} className="text-slate-300 flex justify-between">
+                                <span>
+                                  <span className="text-slate-500 mr-2">#{idx + 1}</span>
+                                  {m.username}
+                                  {m.role && m.role !== 'member' && (
+                                    <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-slate-800 border border-slate-700 text-slate-300 align-middle">{m.role}</span>
+                                  )}
+                                </span>
+                                <span className="text-brand-400 font-semibold">ELO {m.elo}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="text-slate-400">No members</p>
+                        )}
                       </div>
                     )}
 
@@ -785,15 +829,15 @@ function App() {
                       </div>
                     )}
 
-                    {groupDetails.my_role === 'owner' && groupTab === 'settings' && (
-                      <div>
-                        <h4 className="font-semibold">Invite Friend</h4>
-                        <div className="mt-2 flex gap-2">
-                          <input value={inviteInput} onChange={(e) => setInviteInput(e.target.value)} className="flex-1 rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100" />
-                          <button onClick={inviteToGroup} className="px-3 py-2 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-100">Invite</button>
-                        </div>
-                      </div>
-                    )}
+                        {groupDetails.my_role === 'owner' && groupTab === 'settings' && (
+                          <div>
+                            <h4 className="font-semibold">Invite Friend</h4>
+                            <div className="mt-2 flex gap-2">
+                              <input value={inviteInput} onChange={(e) => setInviteInput(e.target.value)} className="flex-1 rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100" />
+                              <Button onClick={inviteToGroup} variant="secondary">Invite</Button>
+                            </div>
+                          </div>
+                        )}
 
                     {/* Record Match / Tie with Teams */}
                     {selectedGroup && groupTab === 'matches' && (
@@ -935,7 +979,7 @@ function App() {
                             </div>
                           )}
                           <div>
-                            <button type="submit" className="px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white">Record</button>
+                            <Button type="submit" variant="success">Record</Button>
                           </div>
                         </form>
                       </div>
@@ -1011,7 +1055,7 @@ function App() {
                     )}
                   </div>
                 )}
-              </section>
+              </Card>
             </div>
 
             {status && (

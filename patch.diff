@@ -1,0 +1,21 @@
+*** Begin Patch`n*** Update File: head2head-backend/app/routes.py`n@@`n-        return jsonify({'ok': False, 'error': 'Owner must transfer ownership before leaving'}), 400
+-
+-    if my.role == 'owner' and member_count == 1:
+-        # Delete the group; cascades remove related records
+-        db.session.delete(group)
+-def _b64url_encode(data: bytes) -> str:
+-    return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')
+-
+-
++    if my.role == 'owner' and member_count == 1:
++        db.session.delete(group)
++        db.session.commit()
++        return jsonify({'ok': True, 'group_deleted': True}), 200
++    else:
++        rank = Ranking.query.filter_by(user_id=me.id, group_id=group.id).first()
++        if rank:
++            db.session.delete(rank)
++        db.session.delete(my)
++        db.session.commit()
++        return jsonify({'ok': True, 'left_group': True}), 200
+*** End Patch`n

@@ -10,3 +10,6 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     # Optional: echo SQL queries for debugging
     SQLALCHEMY_ECHO = os.getenv("SQLALCHEMY_ECHO", "false").lower() == "true"
+    # Security
+    SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
+    JWT_EXP_SECONDS = int(os.getenv("JWT_EXP_SECONDS", "1209600"))  # 14 days by default

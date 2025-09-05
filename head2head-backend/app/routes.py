@@ -1,6 +1,7 @@
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, current_app
 from sqlalchemy import or_
 from datetime import datetime
+import time, json, base64, hmac, hashlib
 
 from app import db
 from app.models import User, Group, Membership, Invite, Ranking, Match, MatchParticipant
@@ -52,21 +53,17 @@ def create_user():
     user.set_password(password)
     db.session.add(user)
     db.session.commit()
-
-    return (
-        jsonify(
-            {
-                'ok': True,
-                'user': {
-                    'id': user.id,
-                    'username': user.username,
-                    'email': user.email,
-                    'created_at': user.created_at.isoformat(),
-                }
-            }
-        ),
-        201,
-    )
+    token = _issue_token(user.id)
+    return jsonify({
+        'ok': True,
+        'token': token,
+        'user': {
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'created_at': user.created_at.isoformat(),
+        }
+    }), 201
 
 
 @bp.route('/auth/login', methods=['POST'])
@@ -83,8 +80,10 @@ def login():
     if not user or not user.check_password(password):
         return jsonify({'ok': False, 'error': 'Invalid credentials'}), 401
 
+    token = _issue_token(user.id)
     return jsonify({
         'ok': True,
+        'token': token,
         'user': {
             'id': user.id,
             'username': user.username,
@@ -94,6 +93,13 @@ def login():
 
 
 def _current_user():
+    auth = request.headers.get('Authorization') or ''
+    if auth.lower().startswith('bearer '):
+        token = auth.split(' ', 1)[1].strip()
+        payload = _jwt_decode(token)
+        if payload and 'sub' in payload:
+            return User.query.get(int(payload['sub']))
+        return None
     uid = request.headers.get('X-User-Id')
     if not uid:
         return None
@@ -102,6 +108,14 @@ def _current_user():
     except ValueError:
         return None
     return User.query.get(uid)
+
+
+@bp.route('/auth/me', methods=['GET'])
+def auth_me():
+    me = _current_user()
+    if not me:
+        return jsonify({'ok': False, 'error': 'Unauthorized'}), 401
+    return jsonify({'ok': True, 'user': {'id': me.id, 'username': me.username, 'email': me.email}}), 200
 
 
 # Groups
@@ -844,18 +858,60 @@ def leave_group(group_id: int):
         return jsonify({'ok': False, 'error': 'Owner must transfer ownership before leaving'}), 400
 
     if my.role == 'owner' and member_count == 1:
-        # Delete the group; cascades remove related records
         db.session.delete(group)
         db.session.commit()
         return jsonify({'ok': True, 'group_deleted': True}), 200
     else:
-        # Remove membership and the user's ranking for this group
         rank = Ranking.query.filter_by(user_id=me.id, group_id=group.id).first()
         if rank:
             db.session.delete(rank)
         db.session.delete(my)
         db.session.commit()
         return jsonify({'ok': True, 'left_group': True}), 200
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b'=').decode('ascii')
+
+def _b64url_decode(data: str) -> bytes:
+    pad = '=' * (-len(data) % 4)
+    return base64.urlsafe_b64decode(data + pad)
+
+
+def _jwt_encode(payload: dict) -> str:
+    header = {"alg": "HS256", "typ": "JWT"}
+    h = _b64url_encode(json.dumps(header, separators=(',', ':')).encode('utf-8'))
+    p = _b64url_encode(json.dumps(payload, separators=(',', ':')).encode('utf-8'))
+    signing_input = f"{h}.{p}".encode('ascii')
+    secret = current_app.config['SECRET_KEY'].encode('utf-8')
+    sig = hmac.new(secret, signing_input, hashlib.sha256).digest()
+    s = _b64url_encode(sig)
+    return f"{h}.{p}.{s}"
+
+
+def _jwt_decode(token: str) -> dict | None:
+    try:
+        parts = token.split('.')
+        if len(parts) != 3:
+            return None
+        h_b, p_b, s_b = parts
+        signing_input = f"{h_b}.{p_b}".encode('ascii')
+        sig = _b64url_decode(s_b)
+        secret = current_app.config['SECRET_KEY'].encode('utf-8')
+        expected = hmac.new(secret, signing_input, hashlib.sha256).digest()
+        if not hmac.compare_digest(sig, expected):
+            return None
+        payload = json.loads(_b64url_decode(p_b).decode('utf-8'))
+        if 'exp' in payload and int(payload['exp']) < int(time.time()):
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def _issue_token(user_id: int) -> str:
+    now = int(time.time())
+    exp = now + int(current_app.config.get('JWT_EXP_SECONDS', 1209600))
+    return _jwt_encode({"sub": int(user_id), "iat": now, "exp": exp})
 @bp.route('/compare', methods=['POST'])
 def compare():
     data = request.json
