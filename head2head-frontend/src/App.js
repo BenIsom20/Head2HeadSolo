@@ -36,6 +36,7 @@ function App() {
   const [groupForm, setGroupForm] = useState({ name: '' });
   const [createSportSelect, setCreateSportSelect] = useState('');
   const [createSportCustom, setCreateSportCustom] = useState('');
+  const [createCustomFormat, setCreateCustomFormat] = useState('team'); // 'team' | 'ffa'
   const [inviteInput, setInviteInput] = useState('');
   const [pendingInvites, setPendingInvites] = useState([]); // usernames to invite when creating
   const [myGroups, setMyGroups] = useState([]);
@@ -53,6 +54,16 @@ function App() {
   const [teamAIds, setTeamAIds] = useState([]);
   const [teamBIds, setTeamBIds] = useState([]);
   const [winnerTeam, setWinnerTeam] = useState(1); // 1 or 2
+  const [teamAScore, setTeamAScore] = useState('');
+  const [teamBScore, setTeamBScore] = useState('');
+  // FFA state
+  const [isFFA, setIsFFA] = useState(false);
+  const [ffaParticipantCount, setFfaParticipantCount] = useState(4);
+  const [ffaParticipants, setFfaParticipants] = useState([]); // array of user ids (strings)
+  const [ffaSingleWinner, setFfaSingleWinner] = useState(false);
+  const [ffaWinnerId, setFfaWinnerId] = useState('');
+  const [ffaRanks, setFfaRanks] = useState({}); // userId -> place
+  const [matchHistory, setMatchHistory] = useState([]);
 
   const onChange = (e) => {
     const { name, value } = e.target;
@@ -129,6 +140,7 @@ function App() {
     setGroupForm({ name: '' });
     setCreateSportSelect('');
     setCreateSportCustom('');
+    setCreateCustomFormat('team');
     setCreateTeamSize(1);
     setPendingInvites([]);
     setInviteInput('');
@@ -154,6 +166,14 @@ function App() {
     } catch {}
   };
 
+  const fetchHistory = async (uid, groupId) => {
+    try {
+      const res = await fetch(`/api/groups/${groupId}/matches?limit=20`, { headers: headersWithUser(uid) });
+      const data = await res.json();
+      if (res.ok) setMatchHistory(data.matches || []);
+    } catch {}
+  };
+
   // Sync edit sport dropdown with loaded group details
   useEffect(() => {
     if (!groupDetails) return;
@@ -173,6 +193,18 @@ function App() {
     setTeamAIds(Array.from({ length: ts }, () => ''));
     setTeamBIds(Array.from({ length: ts }, () => ''));
     setWinnerTeam(1);
+    setTeamAScore('');
+    setTeamBScore('');
+    // initialize FFA participants with a reasonable default
+    const defaultFFA = Math.max(2, Math.min(6, ts * 2));
+    setFfaParticipantCount(defaultFFA);
+    setFfaParticipants(Array.from({ length: defaultFFA }, () => ''));
+    setFfaSingleWinner(false);
+    setFfaWinnerId('');
+    setFfaRanks({});
+    if (user && selectedGroup) {
+      fetchHistory(user.id, selectedGroup);
+    }
   }, [groupDetails]);
 
   // Auto-suggest default team size on create when sport changes (and not other)
@@ -233,10 +265,13 @@ function App() {
       setStatus({ type: 'error', message: 'Please select or enter a sport' });
       return;
     }
-    const dts = Number(createTeamSize);
-    if (!Number.isInteger(dts) || dts < 1) {
-      setStatus({ type: 'error', message: 'Enter a valid default team size (>=1)' });
-      return;
+    let dts = 1;
+    if (!(createSportSelect === 'other' && createCustomFormat === 'ffa')) {
+      dts = Number(createTeamSize);
+      if (!Number.isInteger(dts) || dts < 1) {
+        setStatus({ type: 'error', message: 'Enter a valid default team size (>=1)' });
+        return;
+      }
     }
     try {
       const res = await fetch('/api/groups', {
@@ -253,6 +288,7 @@ function App() {
       setGroupForm({ name: '' });
       setCreateSportSelect('');
       setCreateSportCustom('');
+      setCreateCustomFormat('team');
       setCreateTeamSize(1);
       setPendingInvites([]);
       fetchMyGroups(user.id);
@@ -305,39 +341,85 @@ function App() {
   const recordMatch = async (e) => {
     e.preventDefault();
     if (!user || !selectedGroup) return;
-    // Validate team selections
-    const a = teamAIds.map((x) => Number(x)).filter((x) => !!x);
-    const b = teamBIds.map((x) => Number(x)).filter((x) => !!x);
-    if (a.length !== teamSize || b.length !== teamSize) {
-      setStatus({ type: 'error', message: 'Select all players for both teams' });
-      return;
-    }
-    const overlap = a.filter((id) => b.includes(id));
-    if (overlap.length > 0) {
-      setStatus({ type: 'error', message: 'A player cannot be on both teams' });
-      return;
+    let body;
+    if (isFFA) {
+      // FFA validation
+      const parts = ffaParticipants.map((x) => Number(x)).filter((x) => !!x);
+      if (parts.length !== ffaParticipantCount) {
+        setStatus({ type: 'error', message: 'Select all FFA participants' });
+        return;
+      }
+      const uniq = new Set(parts);
+      if (uniq.size !== parts.length) {
+        setStatus({ type: 'error', message: 'Duplicate participants in FFA' });
+        return;
+      }
+      if (ffaSingleWinner) {
+        const w = Number(ffaWinnerId);
+        if (!w || !parts.includes(w)) {
+          setStatus({ type: 'error', message: 'Select the FFA winner from participants' });
+          return;
+        }
+        body = { ffa: true, players: parts, winner_id: w };
+      } else {
+        // placements required for each participant
+        const rankMap = {};
+        for (const uid of parts) {
+          const r = Number(ffaRanks[uid]);
+          if (!Number.isInteger(r) || r < 1) {
+            setStatus({ type: 'error', message: 'Enter a valid place (>=1) for each participant' });
+            return;
+          }
+          rankMap[uid] = r;
+        }
+        body = { ffa: true, players: parts, ranks: rankMap };
+      }
+    } else {
+      // Team validation
+      const a = teamAIds.map((x) => Number(x)).filter((x) => !!x);
+      const b = teamBIds.map((x) => Number(x)).filter((x) => !!x);
+      if (a.length !== teamSize || b.length !== teamSize) {
+        setStatus({ type: 'error', message: 'Select all players for both teams' });
+        return;
+      }
+      const overlap = a.filter((id) => b.includes(id));
+      if (overlap.length > 0) {
+        setStatus({ type: 'error', message: 'A player cannot be on both teams' });
+        return;
+      }
+      body = isTie ? { is_tie: true, playersA: a, playersB: b } : { playersA: a, playersB: b, winner_team: Number(winnerTeam) };
+      const sa = teamAScore !== '' ? Number(teamAScore) : undefined;
+      const sb = teamBScore !== '' ? Number(teamBScore) : undefined;
+      if (sa !== undefined) body.score_a = sa;
+      if (sb !== undefined) body.score_b = sb;
     }
     try {
       const res = await fetch(`/api/groups/${selectedGroup}/matches`, {
         method: 'POST',
         headers: headersWithUser(user.id),
-        body: JSON.stringify(
-          isTie
-            ? { is_tie: true, playersA: a, playersB: b }
-            : { playersA: a, playersB: b, winner_team: Number(winnerTeam) }
-        ),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) {
         setStatus({ type: 'error', message: data.error || 'Failed to record match' });
         return;
       }
-      setStatus({ type: 'success', message: isTie ? 'Tie recorded and ELO updated' : 'Match recorded and ELO updated' });
-      setTeamAIds(Array.from({ length: teamSize }, () => ''));
-      setTeamBIds(Array.from({ length: teamSize }, () => ''));
-      setIsTie(false);
-      setWinnerTeam(1);
+      setStatus({ type: 'success', message: isFFA ? 'FFA recorded and ELO updated' : (isTie ? 'Tie recorded and ELO updated' : 'Match recorded and ELO updated') });
+      if (isFFA) {
+        setFfaParticipants(Array.from({ length: ffaParticipantCount }, () => ''));
+        setFfaSingleWinner(false);
+        setFfaWinnerId('');
+        setFfaRanks({});
+      } else {
+        setTeamAIds(Array.from({ length: teamSize }, () => ''));
+        setTeamBIds(Array.from({ length: teamSize }, () => ''));
+        setIsTie(false);
+        setWinnerTeam(1);
+        setTeamAScore('');
+        setTeamBScore('');
+      }
       fetchGroup(user.id, selectedGroup);
+      fetchHistory(user.id, selectedGroup);
       fetchMyGroups(user.id);
     } catch (e1) {
       setStatus({ type: 'error', message: 'Network error recording match' });
@@ -482,15 +564,32 @@ function App() {
                         ))}
                       </select>
                       {createSportSelect === 'other' && (
-                        <input placeholder="Enter custom sport" value={createSportCustom} onChange={(e) => setCreateSportCustom(e.target.value)} className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                        <>
+                          <input placeholder="Enter custom sport" value={createSportCustom} onChange={(e) => setCreateSportCustom(e.target.value)} className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                          <div className="text-slate-300">
+                            <label className="block text-sm mt-3">Competition Format</label>
+                            <div className="mt-1 flex flex-col sm:flex-row gap-3">
+                              <label className="inline-flex items-center gap-2">
+                                <input type="radio" name="createCustomFormat" value="team" checked={createCustomFormat === 'team'} onChange={() => setCreateCustomFormat('team')} />
+                                Team-based (uses team size)
+                              </label>
+                              <label className="inline-flex items-center gap-2">
+                                <input type="radio" name="createCustomFormat" value="ffa" checked={createCustomFormat === 'ffa'} onChange={() => setCreateCustomFormat('ffa')} />
+                                Free For All
+                              </label>
+                            </div>
+                          </div>
+                        </>
                       )}
                     </div>
                   </div>
-                  <div>
-                    <label className="block text-sm text-slate-300">Default Team Size</label>
-                    <input type="number" min={1} value={createTeamSize} onChange={(e) => setCreateTeamSize(e.target.value)} className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-500" />
-                    <p className="text-xs text-slate-500 mt-1">Auto-filled from sport; you can adjust.</p>
-                  </div>
+                  {!(createSportSelect === 'other' && createCustomFormat === 'ffa') && (
+                    <div>
+                      <label className="block text-sm text-slate-300">Default Team Size</label>
+                      <input type="number" min={1} value={createTeamSize} onChange={(e) => setCreateTeamSize(e.target.value)} className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                      <p className="text-xs text-slate-500 mt-1">Auto-filled from sport; you can adjust.</p>
+                    </div>
+                  )}
                   <div>
                     <label className="block text-sm text-slate-300">Invite by username</label>
                     <div className="mt-1 flex gap-2">
@@ -639,6 +738,13 @@ function App() {
                       <div>
                         <h4 className="font-semibold">Record Match</h4>
                         <form onSubmit={recordMatch} className="mt-2 space-y-3">
+                          <div className="flex items-center gap-4 text-slate-300">
+                            <label className="inline-flex items-center gap-2">
+                              <input type="checkbox" checked={isFFA} onChange={(e) => setIsFFA(e.target.checked)} />
+                              Free For All
+                            </label>
+                          </div>
+                          {!isFFA && (
                           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-end">
                             <div>
                               <label className="block text-sm text-slate-300">Team Size</label>
@@ -668,6 +774,8 @@ function App() {
                               )}
                             </div>
                           </div>
+                          )}
+                          {!isFFA && (
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                               <h5 className="font-medium">Team A</h5>
@@ -696,6 +804,74 @@ function App() {
                               </div>
                             </div>
                           </div>
+                          )}
+                          {!isFFA && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                              <div>
+                                <label className="block text-sm text-slate-300">Team A score (optional)</label>
+                                <input type="number" min={0} value={teamAScore} onChange={(e) => setTeamAScore(e.target.value)} className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100" />
+                              </div>
+                              <div>
+                                <label className="block text-sm text-slate-300">Team B score (optional)</label>
+                                <input type="number" min={0} value={teamBScore} onChange={(e) => setTeamBScore(e.target.value)} className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100" />
+                              </div>
+                            </div>
+                          )}
+                          {isFFA && (
+                            <div className="space-y-3">
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-end">
+                                <div>
+                                  <label className="block text-sm text-slate-300">Participants</label>
+                                  <input type="number" min={2} value={ffaParticipantCount} onChange={(e) => {
+                                    const n = Math.max(2, Number(e.target.value || 2));
+                                    setFfaParticipantCount(n);
+                                    setFfaParticipants((arr) => Array.from({ length: n }, (_, i) => arr[i] || ''));
+                                  }} className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100" />
+                                </div>
+                                <div className="sm:col-span-2 flex items-center gap-4 text-slate-300">
+                                  <label className="inline-flex items-center gap-2">
+                                    <input type="checkbox" checked={ffaSingleWinner} onChange={(e) => setFfaSingleWinner(e.target.checked)} />
+                                    Single winner (others tie)
+                                  </label>
+                                  {ffaSingleWinner && (
+                                    <select value={ffaWinnerId} onChange={(e) => setFfaWinnerId(e.target.value)} className="rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100">
+                                      <option value="">Select winner</option>
+                                      {ffaParticipants
+                                        .map((pid) => groupDetails.members?.find((m) => String(m.id) === String(pid)))
+                                        .filter(Boolean)
+                                        .map((m) => (
+                                          <option key={m.id} value={m.id}>{m.username}</option>
+                                        ))}
+                                    </select>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                  <h5 className="font-medium">Participants</h5>
+                                  <div className="mt-2 space-y-2">
+                                    {Array.from({ length: ffaParticipantCount }).map((_, idx) => (
+                                      <div key={idx} className="flex gap-2 items-center">
+                                        <select value={ffaParticipants[idx] || ''} onChange={(e) => setFfaParticipants((arr) => { const cp = [...arr]; cp[idx] = e.target.value; return cp; })} className="flex-1 rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100">
+                                          <option value="">Select participant {idx + 1}</option>
+                                          {groupDetails.members?.map((m) => (
+                                            <option key={m.id} value={m.id}>{m.username}</option>
+                                          ))}
+                                        </select>
+                                        {!ffaSingleWinner && (
+                                          <input type="number" min={1} placeholder="Place" value={ffaRanks[ffaParticipants[idx]] || ''} onChange={(e) => {
+                                            const uid = ffaParticipants[idx];
+                                            const val = e.target.value;
+                                            setFfaRanks((r) => ({ ...r, [uid]: val }));
+                                          }} className="w-24 rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100" />
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
                           <div>
                             <button type="submit" className="px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white">Record</button>
                           </div>
@@ -725,6 +901,50 @@ function App() {
                         <div>
                           <button onClick={leaveGroup} className="px-4 py-2 rounded-md bg-rose-700 hover:bg-rose-600 text-white">Leave Group</button>
                         </div>
+                      </div>
+                    )}
+
+                    {/* Match History */}
+                    {selectedGroup && (
+                      <div className="mt-8">
+                        <h4 className="font-semibold">Match History</h4>
+                        {matchHistory.length === 0 ? (
+                          <p className="text-slate-400 mt-2">No matches yet</p>
+                        ) : (
+                          <ul className="mt-2 space-y-2">
+                            {matchHistory.map((m) => (
+                              <li key={m.id} className="bg-slate-800/60 border border-slate-700 rounded-lg p-3 text-slate-200">
+                                <div className="text-sm text-slate-400">{new Date(m.created_at).toLocaleString()}</div>
+                                {m.kind === 'ffa' ? (
+                                  <div className="mt-1">
+                                    <div className="text-sm">FFA{m.is_tie ? ' (tie in placements)' : ''}</div>
+                                    <div className="text-slate-300 text-sm mt-1">
+                                      {m.participants
+                                        .slice()
+                                        .sort((a, b) => (a.place ?? 999) - (b.place ?? 999))
+                                        .map((p) => `${p.place || '-'}: ${p.user.username}`)
+                                        .join('  |  ')}
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="mt-1">
+                                    <div className="text-sm">{m.is_tie ? 'Tie' : 'Match'}</div>
+                                    <div className="text-slate-300 text-sm mt-1">
+                                      {/* Group participants by team */}
+                                      {(() => {
+                                        const a = m.participants.filter((p) => p.team === 1).map((p) => p.user.username).join(', ') || '—';
+                                        const b = m.participants.filter((p) => p.team === 2).map((p) => p.user.username).join(', ') || '—';
+                                        const sa = m.team_a_score != null ? m.team_a_score : '—';
+                                        const sb = m.team_b_score != null ? m.team_b_score : '—';
+                                        return `${a} ${sa} - ${sb} ${b}`;
+                                      })()}
+                                    </div>
+                                  </div>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
                       </div>
                     )}
                   </div>

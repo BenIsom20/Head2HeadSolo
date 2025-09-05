@@ -400,6 +400,153 @@ def record_match(group_id: int):
         or payload.get('tie')
         or (isinstance(payload.get('result'), str) and payload.get('result', '').strip().lower() == 'tie')
     )
+    is_ffa = bool(payload.get('ffa') or payload.get('mode') == 'ffa' or payload.get('free_for_all'))
+    # Optional team scores for team/duel
+    def _parse_team_scores(pl):
+        a = pl.get('score_a')
+        b = pl.get('score_b')
+        try:
+            a = int(a) if a is not None else None
+            b = int(b) if b is not None else None
+        except (TypeError, ValueError):
+            return (None, None, 'score_a and score_b must be integers')
+        return (a, b, None)
+
+    # Free-For-All (FFA) flow
+    if is_ffa:
+        # Collect players and rankings/placements
+        players = payload.get('players') or []
+        ranks_input = payload.get('ranks') or payload.get('placements')
+        ordering = payload.get('ordering')  # list of user_ids in finish order (best to worst)
+        winner_id = payload.get('winner_id')
+
+        # Normalize players list if ranks/ordering provided
+        if not players and isinstance(ranks_input, dict):
+            try:
+                players = [int(k) for k in ranks_input.keys()]
+            except (TypeError, ValueError):
+                return jsonify({'ok': False, 'error': 'Invalid ranks keys'}), 400
+        if not players and isinstance(ordering, list):
+            try:
+                players = [int(x) for x in ordering]
+            except (TypeError, ValueError):
+                return jsonify({'ok': False, 'error': 'Invalid ordering values'}), 400
+
+        # Validate players
+        if not isinstance(players, list) or len(players) < 2:
+            return jsonify({'ok': False, 'error': 'FFA requires at least 2 participants'}), 400
+        try:
+            player_ids = [int(x) for x in players]
+        except (TypeError, ValueError):
+            return jsonify({'ok': False, 'error': 'players must be an array of user ids'}), 400
+        if len(set(player_ids)) != len(player_ids):
+            return jsonify({'ok': False, 'error': 'Duplicate players in FFA participants'}), 400
+        # membership and rankings
+        for uid in player_ids:
+            if not Membership.query.filter_by(user_id=uid, group_id=group.id).first():
+                return jsonify({'ok': False, 'error': f'User {uid} is not a member of this group'}), 400
+        rankings = {}
+        for uid in player_ids:
+            r = Ranking.query.filter_by(user_id=uid, group_id=group.id).first()
+            if not r:
+                r = Ranking(user_id=uid, group_id=group.id, points=1000)
+                db.session.add(r)
+            rankings[uid] = r
+
+        # Build rank map: lower number is better (1 = winner). Ties allowed.
+        rank_map = {}
+        if isinstance(ranks_input, dict):
+            # keys may be strings
+            tmp = {}
+            for k, v in ranks_input.items():
+                try:
+                    uid = int(k)
+                    place = int(v)
+                except (TypeError, ValueError):
+                    return jsonify({'ok': False, 'error': 'ranks must map user_id to integer place'}), 400
+                if uid not in player_ids:
+                    return jsonify({'ok': False, 'error': f'user {uid} in ranks not in players'}), 400
+                if place < 1:
+                    return jsonify({'ok': False, 'error': 'place must be >= 1'}), 400
+                tmp[uid] = place
+            rank_map = tmp
+        elif isinstance(ordering, list) and ordering:
+            # assign 1..N
+            try:
+                ordering_ids = [int(x) for x in ordering]
+            except (TypeError, ValueError):
+                return jsonify({'ok': False, 'error': 'ordering must contain user ids'}), 400
+            if set(ordering_ids) != set(player_ids):
+                return jsonify({'ok': False, 'error': 'ordering must include all players exactly once'}), 400
+            for idx, uid in enumerate(ordering_ids, start=1):
+                rank_map[uid] = idx
+        elif winner_id is not None:
+            try:
+                winner_id = int(winner_id)
+            except (TypeError, ValueError):
+                return jsonify({'ok': False, 'error': 'winner_id must be an integer'}), 400
+            if winner_id not in player_ids:
+                return jsonify({'ok': False, 'error': 'winner_id must be one of players'}), 400
+            for uid in player_ids:
+                rank_map[uid] = 1 if uid == winner_id else 2
+        else:
+            return jsonify({'ok': False, 'error': 'Provide ranks, ordering, or winner_id for FFA'}), 400
+
+        # Compute pairwise expected and score averages
+        ids = player_ids
+        current = {uid: float(rankings[uid].points or 1000) for uid in ids}
+        import math
+        def expected(p_i, p_j):
+            return 1.0 / (1.0 + 10.0 ** ((p_j - p_i) / 400.0))
+        score = {}
+        exp_avg = {}
+        for i in ids:
+            s = 0.0
+            e = 0.0
+            for j in ids:
+                if i == j:
+                    continue
+                # outcome for i vs j based on places
+                if rank_map[i] < rank_map[j]:
+                    s += 1.0
+                elif rank_map[i] > rank_map[j]:
+                    s += 0.0
+                else:
+                    s += 0.5
+                e += expected(current[i], current[j])
+            n_opp = max(1, len(ids) - 1)
+            score[i] = s / n_opp
+            exp_avg[i] = e / n_opp
+
+        k = 32.0
+        deltas = {uid: int(round(k * (score[uid] - exp_avg[uid]))) for uid in ids}
+        # Apply updates
+        for uid in ids:
+            rankings[uid].points = int((rankings[uid].points or 1000) + deltas[uid])
+
+        # Persist match and participants
+        top_place = min(rank_map.values())
+        winners = [uid for uid, plc in rank_map.items() if plc == top_place]
+        match = Match(
+            group_id=group.id,
+            winner_id=winners[0] if len(winners) == 1 else None,
+            loser_id=None,
+            is_tie=(len(winners) != 1),
+        )
+        db.session.add(match)
+        db.session.flush()
+        for uid in ids:
+            db.session.add(MatchParticipant(match_id=match.id, user_id=uid, team=0, place=int(rank_map[uid])))
+        db.session.commit()
+
+        return jsonify({
+            'ok': True,
+            'ffa': True,
+            'players': [
+                {'id': uid, 'elo': rankings[uid].points, 'delta': deltas[uid], 'place': int(rank_map[uid])}
+                for uid in ids
+            ],
+        }), 201
     # Teams (arrays) support
     players_a = payload.get('playersA') or payload.get('team_a') or payload.get('team1') or []
     players_b = payload.get('playersB') or payload.get('team_b') or payload.get('team2') or []
@@ -465,13 +612,16 @@ def record_match(group_id: int):
             rankings[uid].points = int((rankings[uid].points or 1000) + per_b)
 
         # Persist match and participants
+        ta, tb, score_err = _parse_team_scores(payload)
+        if score_err:
+            return jsonify({'ok': False, 'error': score_err}), 400
         if is_tie:
-            match = Match(group_id=group.id, winner_id=team_a_ids[0], loser_id=team_b_ids[0], is_tie=True)
+            match = Match(group_id=group.id, winner_id=team_a_ids[0], loser_id=team_b_ids[0], is_tie=True, team_a_score=ta, team_b_score=tb)
         else:
             if score_a > score_b:
-                match = Match(group_id=group.id, winner_id=team_a_ids[0], loser_id=team_b_ids[0], is_tie=False)
+                match = Match(group_id=group.id, winner_id=team_a_ids[0], loser_id=team_b_ids[0], is_tie=False, team_a_score=ta, team_b_score=tb)
             else:
-                match = Match(group_id=group.id, winner_id=team_b_ids[0], loser_id=team_a_ids[0], is_tie=False)
+                match = Match(group_id=group.id, winner_id=team_b_ids[0], loser_id=team_a_ids[0], is_tie=False, team_a_score=ta, team_b_score=tb)
         db.session.add(match)
         db.session.flush()
         for uid in team_a_ids:
@@ -522,7 +672,10 @@ def record_match(group_id: int):
 
         r1.points = int(new_ra)
         r2.points = int(new_rb)
-        db.session.add(Match(group_id=group.id, winner_id=p1_id, loser_id=p2_id, is_tie=True))
+        ta, tb, score_err = _parse_team_scores(payload)
+        if score_err:
+            return jsonify({'ok': False, 'error': score_err}), 400
+        db.session.add(Match(group_id=group.id, winner_id=p1_id, loser_id=p2_id, is_tie=True, team_a_score=ta, team_b_score=tb))
         db.session.commit()
 
         return jsonify({
@@ -566,7 +719,10 @@ def record_match(group_id: int):
 
         win_rank.points = int(new_ra)
         lose_rank.points = int(new_rb)
-        db.session.add(Match(group_id=group.id, winner_id=winner_id, loser_id=loser_id, is_tie=False))
+        ta, tb, score_err = _parse_team_scores(payload)
+        if score_err:
+            return jsonify({'ok': False, 'error': score_err}), 400
+        db.session.add(Match(group_id=group.id, winner_id=winner_id, loser_id=loser_id, is_tie=False, team_a_score=ta, team_b_score=tb))
         db.session.commit()
 
         return jsonify({
@@ -574,6 +730,74 @@ def record_match(group_id: int):
             'winner': {'id': winner_id, 'elo': win_rank.points},
             'loser': {'id': loser_id, 'elo': lose_rank.points},
         }), 201
+
+
+@bp.route('/groups/<int:group_id>/matches', methods=['GET'])
+def list_matches(group_id: int):
+    me = _current_user()
+    if not me:
+        return jsonify({'ok': False, 'error': 'Unauthorized'}), 401
+
+    group = Group.query.get_or_404(group_id)
+    # Must be a member to view
+    if not Membership.query.filter_by(user_id=me.id, group_id=group.id).first():
+        return jsonify({'ok': False, 'error': 'Forbidden'}), 403
+
+    try:
+        limit = int(request.args.get('limit', 20))
+        offset = int(request.args.get('offset', 0))
+    except ValueError:
+        return jsonify({'ok': False, 'error': 'limit and offset must be integers'}), 400
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    matches = (
+        Match.query.filter_by(group_id=group.id)
+        .order_by(Match.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    def match_payload(m: Match):
+        # Collect participants if present
+        parts = (
+            db.session.query(MatchParticipant, User)
+            .join(User, User.id == MatchParticipant.user_id)
+            .filter(MatchParticipant.match_id == m.id)
+            .all()
+        )
+        participants = [
+            {
+                'user': {'id': u.id, 'username': u.username},
+                'team': p.team,
+                'place': p.place,
+            }
+            for (p, u) in parts
+        ]
+        kind = 'ffa' if any(p['team'] == 0 for p in participants) else ('team' if participants else 'duel')
+        # Fallback participants for duels
+        if not participants and (m.winner_id or m.loser_id):
+            if m.winner_id:
+                u = User.query.get(m.winner_id)
+                if u:
+                    participants.append({'user': {'id': u.id, 'username': u.username}, 'team': 1, 'place': None})
+            if m.loser_id:
+                u = User.query.get(m.loser_id)
+                if u:
+                    participants.append({'user': {'id': u.id, 'username': u.username}, 'team': 2, 'place': None})
+        return {
+            'id': m.id,
+            'created_at': m.created_at.isoformat(),
+            'is_tie': m.is_tie,
+            'kind': kind,
+            'winner_id': m.winner_id,
+            'team_a_score': m.team_a_score,
+            'team_b_score': m.team_b_score,
+            'participants': participants,
+        }
+
+    return jsonify({'ok': True, 'matches': [match_payload(m) for m in matches]}), 200
 
 @bp.route('/groups/<int:group_id>/transfer-ownership', methods=['POST'])
 def transfer_ownership(group_id: int):

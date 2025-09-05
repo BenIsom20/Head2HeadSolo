@@ -98,6 +98,9 @@ class Match(db.Model):
     loser_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     # When true, this record represents a tie between winner_id and loser_id participants
     is_tie = db.Column(db.Boolean, nullable=False, default=False)
+    # Optional scores for team/duel matches
+    team_a_score = db.Column(db.Integer, nullable=True)
+    team_b_score = db.Column(db.Integer, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 
@@ -107,8 +110,10 @@ class MatchParticipant(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     match_id = db.Column(db.Integer, db.ForeignKey("matches.id", ondelete="CASCADE"), nullable=False, index=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    # Team index for this participant: 1 or 2
-    team = db.Column(db.Integer, nullable=False)
+    # Team index for this participant: 0 for FFA, 1 or 2 for teams
+    team = db.Column(db.Integer, nullable=False, default=0)
+    # Finishing place for FFA modes (1 = winner). Null for team/duel modes
+    place = db.Column(db.Integer, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("match_id", "user_id", name="uq_match_participant_user"),
