@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Tabs } from './components';
 import logo from './logo-head2head.svg';
 
 function App() {
@@ -30,6 +31,7 @@ function App() {
 
   const [form, setForm] = useState({ username: '', email: '', password: '' });
   const [status, setStatus] = useState(null);
+  const [token, setToken] = useState(() => localStorage.getItem('token') || '');
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [user, setUser] = useState(null);
   const [showSignup, setShowSignup] = useState(false);
@@ -54,6 +56,7 @@ function App() {
   const [teamAIds, setTeamAIds] = useState([]);
   const [teamBIds, setTeamBIds] = useState([]);
   const [winnerTeam, setWinnerTeam] = useState(1); // 1 or 2
+  const [groupTab, setGroupTab] = useState('overview'); // overview | matches | members | settings
   const [teamAScore, setTeamAScore] = useState('');
   const [teamBScore, setTeamBScore] = useState('');
   // FFA state
@@ -95,6 +98,7 @@ function App() {
         return;
       }
       setStatus({ type: 'success', message: `Welcome, ${data.user.username}` });
+      if (data.token) { localStorage.setItem('token', data.token); setToken(data.token); }
       setUser(data.user); // auto sign-in after account creation
       setForm({ username: '', email: '', password: '' });
       fetchMyGroups(data.user.id);
@@ -119,6 +123,7 @@ function App() {
         setStatus({ type: 'error', message: data?.error || 'Failed to sign in' });
         return;
       }
+      if (data.token) { localStorage.setItem('token', data.token); setToken(data.token); }
       setUser(data.user);
       setStatus({ type: 'success', message: `Signed in as ${data.user.username}` });
       setLoginForm({ username: '', password: '' });
@@ -146,13 +151,20 @@ function App() {
     setInviteInput('');
     setStatus(null);
     setShowSignup(false);
+    setToken('');
+    localStorage.removeItem('token');
   };
 
   const headersWithUser = (uid) => ({ 'Content-Type': 'application/json', 'X-User-Id': String(uid) });
+  const headersAuth = () => {
+    const h = { 'Content-Type': 'application/json' };
+    if (token) h['Authorization'] = `Bearer ${token}`;
+    return h;
+  };
 
   const fetchMyGroups = async (uid) => {
     try {
-      const res = await fetch('/api/my/groups', { headers: headersWithUser(uid) });
+      const res = await fetch('/api/my/groups', { headers: headersAuth() });
       const data = await res.json();
       if (res.ok) setMyGroups(data.groups);
     } catch {}
@@ -160,7 +172,7 @@ function App() {
 
   const fetchGroup = async (uid, groupId) => {
     try {
-      const res = await fetch(`/api/groups/${groupId}`, { headers: headersWithUser(uid) });
+      const res = await fetch(`/api/groups/${groupId}`, { headers: headersAuth() });
       const data = await res.json();
       if (res.ok) setGroupDetails(data.group);
     } catch {}
@@ -168,7 +180,7 @@ function App() {
 
   const fetchHistory = async (uid, groupId) => {
     try {
-      const res = await fetch(`/api/groups/${groupId}/matches?limit=20`, { headers: headersWithUser(uid) });
+      const res = await fetch(`/api/groups/${groupId}/matches?limit=20`, { headers: headersAuth() });
       const data = await res.json();
       if (res.ok) setMatchHistory(data.matches || []);
     } catch {}
@@ -214,9 +226,31 @@ function App() {
     setCreateTeamSize(d);
   }, [createSportSelect]);
 
+  // Auto sign-in from JWT on load
+  useEffect(() => {
+    const init = async () => {
+      if (!token) return;
+      try {
+        const res = await fetch('/api/auth/me', { headers: headersAuth() });
+        const data = await res.json();
+        if (res.ok) {
+          setUser(data.user);
+          fetchMyGroups(data.user.id);
+          fetchInbox(data.user.id);
+        } else {
+          // invalid/expired token
+          localStorage.removeItem('token');
+          setToken('');
+        }
+      } catch {}
+    };
+    init();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const fetchInbox = async (uid) => {
     try {
-      const res = await fetch('/api/invites?status=pending', { headers: headersWithUser(uid) });
+      const res = await fetch('/api/invites?status=pending', { headers: headersAuth() });
       const data = await res.json();
       if (res.ok) setInbox(data.invites);
     } catch {}
@@ -229,7 +263,7 @@ function App() {
     try {
       const res = await fetch(`/api/invites/${inviteId}/respond`, {
         method: 'POST',
-        headers: headersWithUser(user.id),
+        headers: headersAuth(),
         body: JSON.stringify({ action }),
       });
       const data = await res.json();
@@ -276,7 +310,7 @@ function App() {
     try {
       const res = await fetch('/api/groups', {
         method: 'POST',
-        headers: headersWithUser(user.id),
+        headers: headersAuth(),
         body: JSON.stringify({ name: groupForm.name, sport, default_team_size: dts, invitees: pendingInvites }),
       });
       const data = await res.json();
@@ -303,7 +337,7 @@ function App() {
     try {
       const res = await fetch(`/api/groups/${selectedGroup}`, {
         method: 'PATCH',
-        headers: headersWithUser(user.id),
+        headers: headersAuth(),
         body: JSON.stringify({ name: groupDetails.name, sport: groupDetails.sport, default_team_size: editTeamSize }),
       });
       const data = await res.json();
@@ -325,7 +359,7 @@ function App() {
     try {
       const res = await fetch(`/api/groups/${selectedGroup}/invites`, {
         method: 'POST',
-        headers: headersWithUser(user.id),
+        headers: headersAuth(),
         body: JSON.stringify({ username: u }),
       });
       const data = await res.json();
@@ -396,7 +430,7 @@ function App() {
     try {
       const res = await fetch(`/api/groups/${selectedGroup}/matches`, {
         method: 'POST',
-        headers: headersWithUser(user.id),
+        headers: headersAuth(),
         body: JSON.stringify(body),
       });
       const data = await res.json();
@@ -437,7 +471,7 @@ function App() {
     try {
       const res = await fetch(`/api/groups/${selectedGroup}/transfer-ownership`, {
         method: 'POST',
-        headers: headersWithUser(user.id),
+        headers: headersAuth(),
         body: JSON.stringify({ new_owner_id: id }),
       });
       const data = await res.json();
@@ -460,7 +494,7 @@ function App() {
     try {
       const res = await fetch(`/api/groups/${selectedGroup}/leave`, {
         method: 'POST',
-        headers: headersWithUser(user.id),
+        headers: headersAuth(),
       });
       const data = await res.json();
       if (res.ok) {
@@ -648,10 +682,34 @@ function App() {
 
               <section className="bg-slate-900/60 border border-slate-800 rounded-xl p-6 shadow">
                 <h2 className="text-lg font-semibold mb-4">Group Info</h2>
+                {selectedGroup && groupDetails && (
+                  <div className="mb-2">
+                    <Tabs
+                      value={groupTab}
+                      onChange={setGroupTab}
+                      tabs={[
+                        { value: 'overview', label: 'Overview' },
+                        { value: 'matches', label: 'Matches' },
+                        { value: 'members', label: 'Members' },
+                        { value: 'settings', label: 'Settings' },
+                      ]}
+                    />
+                  </div>
+                )}
                 {!selectedGroup || !groupDetails ? (
                   <p className="text-slate-400">Select a group to view details</p>
                 ) : (
                   <div className="space-y-4">
+                    {groupTab === 'overview' && (
+                      <div className="space-y-2 text-slate-300">
+                        <div>Name: <span className="text-slate-100 font-medium">{groupDetails.name}</span></div>
+                        <div>Sport: <span className="text-slate-100 font-medium">{groupDetails.sport}</span></div>
+                        <div>Members: <span className="text-slate-100 font-medium">{groupDetails.members?.length || 0}</span></div>
+                      </div>
+                    )}
+
+                    {groupTab === 'settings' && (
+                    <>
                     <div>
                       <label className="block text-sm text-slate-300">Name</label>
                       <input value={groupDetails.name} onChange={(e) => setGroupDetails((gd) => ({ ...gd, name: e.target.value }))} disabled={groupDetails.my_role !== 'owner'} className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60" />
@@ -708,9 +766,12 @@ function App() {
                     {groupDetails.my_role === 'owner' && (
                       <button onClick={updateGroup} className="px-4 py-2 rounded-md bg-brand-600 hover:bg-brand-500 text-white">Save</button>
                     )}
+                    </>
+                    )}
 
-                    <div>
-                      <h3 className="font-semibold">Members</h3>
+                    {groupTab === 'members' && (
+                      <div>
+                        <h3 className="font-semibold">Members</h3>
                       {groupDetails.members?.length ? (
                         <ul className="mt-2 space-y-1">
                           {groupDetails.members.map((m) => (
@@ -721,9 +782,10 @@ function App() {
                           ))}
                         </ul>
                       ) : <p className="text-slate-400">No members</p>}
-                    </div>
+                      </div>
+                    )}
 
-                    {groupDetails.my_role === 'owner' && (
+                    {groupDetails.my_role === 'owner' && groupTab === 'settings' && (
                       <div>
                         <h4 className="font-semibold">Invite Friend</h4>
                         <div className="mt-2 flex gap-2">
@@ -734,7 +796,7 @@ function App() {
                     )}
 
                     {/* Record Match / Tie with Teams */}
-                    {selectedGroup && (
+                    {selectedGroup && groupTab === 'matches' && (
                       <div>
                         <h4 className="font-semibold">Record Match</h4>
                         <form onSubmit={recordMatch} className="mt-2 space-y-3">
@@ -880,7 +942,7 @@ function App() {
                     )}
 
                     {/* Ownership / Leave Controls */}
-                    {selectedGroup && groupDetails?.members?.length > 0 && (
+                    {selectedGroup && groupDetails?.members?.length > 0 && groupTab === 'settings' && (
                       <div className="mt-6 space-y-3">
                         {groupDetails.my_role === 'owner' && (
                           <div className="flex flex-col sm:flex-row gap-2 items-end">
