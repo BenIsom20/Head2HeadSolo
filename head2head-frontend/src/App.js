@@ -1,20 +1,58 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import logo from './logo-head2head.svg';
 
 function App() {
+  const SPORT_OPTIONS = [
+    { label: '🏀 Basketball', value: 'Basketball' },
+    { label: '⚽ Soccer (Football)', value: 'Soccer (Football)' },
+    { label: '⚾ Baseball / Softball', value: 'Baseball / Softball' },
+    { label: '🏈 American Football', value: 'American Football' },
+    { label: '🏒 Hockey (Ice, Field, Roller)', value: 'Hockey (Ice, Field, Roller)' },
+    { label: '🏐 Volleyball', value: 'Volleyball' },
+    { label: '🎾 Tennis', value: 'Tennis' },
+    { label: '🏓 Table Tennis (Ping Pong)', value: 'Table Tennis (Ping Pong)' },
+    { label: '⛳ Golf', value: 'Golf' },
+    { label: '🏸 Badminton', value: 'Badminton' },
+    { label: '✏️ Other (Custom)', value: 'other' },
+  ];
+  const SPORT_DEFAULT_SIZES = {
+    'Basketball': 5,
+    'Soccer (Football)': 11,
+    'Baseball / Softball': 9,
+    'American Football': 11,
+    'Hockey (Ice, Field, Roller)': 6,
+    'Volleyball': 6,
+    'Tennis': 1,
+    'Table Tennis (Ping Pong)': 1,
+    'Golf': 1,
+    'Badminton': 1,
+  };
+
   const [form, setForm] = useState({ username: '', email: '', password: '' });
   const [status, setStatus] = useState(null);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   const [user, setUser] = useState(null);
   const [showSignup, setShowSignup] = useState(false);
-  const [groupForm, setGroupForm] = useState({ name: '', sport: '' });
+  const [groupForm, setGroupForm] = useState({ name: '' });
+  const [createSportSelect, setCreateSportSelect] = useState('');
+  const [createSportCustom, setCreateSportCustom] = useState('');
   const [inviteInput, setInviteInput] = useState('');
   const [pendingInvites, setPendingInvites] = useState([]); // usernames to invite when creating
   const [myGroups, setMyGroups] = useState([]);
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [groupDetails, setGroupDetails] = useState(null);
+  const [editSportSelect, setEditSportSelect] = useState('');
+  const [editCustomSport, setEditCustomSport] = useState('');
+  const [createTeamSize, setCreateTeamSize] = useState(1);
+  const [editTeamSize, setEditTeamSize] = useState(1);
   const [winnerId, setWinnerId] = useState('');
   const [loserId, setLoserId] = useState('');
+  const [isTie, setIsTie] = useState(false);
+  const [transferToId, setTransferToId] = useState('');
+  const [teamSize, setTeamSize] = useState(1);
+  const [teamAIds, setTeamAIds] = useState([]);
+  const [teamBIds, setTeamBIds] = useState([]);
+  const [winnerTeam, setWinnerTeam] = useState(1); // 1 or 2
 
   const onChange = (e) => {
     const { name, value } = e.target;
@@ -88,7 +126,10 @@ function App() {
     setInbox([]);
     setSelectedGroup(null);
     setGroupDetails(null);
-    setGroupForm({ name: '', sport: '' });
+    setGroupForm({ name: '' });
+    setCreateSportSelect('');
+    setCreateSportCustom('');
+    setCreateTeamSize(1);
     setPendingInvites([]);
     setInviteInput('');
     setStatus(null);
@@ -112,6 +153,34 @@ function App() {
       if (res.ok) setGroupDetails(data.group);
     } catch {}
   };
+
+  // Sync edit sport dropdown with loaded group details
+  useEffect(() => {
+    if (!groupDetails) return;
+    const known = SPORT_OPTIONS.some((o) => o.value !== 'other' && o.value === groupDetails.sport);
+    if (known) {
+      setEditSportSelect(groupDetails.sport);
+      setEditCustomSport('');
+    } else {
+      setEditSportSelect('other');
+      setEditCustomSport(groupDetails.sport || '');
+    }
+    // sync default team size
+    setEditTeamSize(Number(groupDetails.default_team_size || 1));
+    // set record match team size and reset picks
+    const ts = Number(groupDetails.default_team_size || 1);
+    setTeamSize(ts);
+    setTeamAIds(Array.from({ length: ts }, () => ''));
+    setTeamBIds(Array.from({ length: ts }, () => ''));
+    setWinnerTeam(1);
+  }, [groupDetails]);
+
+  // Auto-suggest default team size on create when sport changes (and not other)
+  useEffect(() => {
+    if (!createSportSelect || createSportSelect === 'other') return;
+    const d = SPORT_DEFAULT_SIZES[createSportSelect] || 1;
+    setCreateTeamSize(d);
+  }, [createSportSelect]);
 
   const fetchInbox = async (uid) => {
     try {
@@ -158,11 +227,22 @@ function App() {
       setStatus({ type: 'error', message: 'Sign in first' });
       return;
     }
+    // Resolve sport value from dropdown/custom
+    const sport = createSportSelect === 'other' ? createSportCustom.trim() : createSportSelect;
+    if (!sport) {
+      setStatus({ type: 'error', message: 'Please select or enter a sport' });
+      return;
+    }
+    const dts = Number(createTeamSize);
+    if (!Number.isInteger(dts) || dts < 1) {
+      setStatus({ type: 'error', message: 'Enter a valid default team size (>=1)' });
+      return;
+    }
     try {
       const res = await fetch('/api/groups', {
         method: 'POST',
         headers: headersWithUser(user.id),
-        body: JSON.stringify({ ...groupForm, invitees: pendingInvites }),
+        body: JSON.stringify({ name: groupForm.name, sport, default_team_size: dts, invitees: pendingInvites }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -170,7 +250,10 @@ function App() {
         return;
       }
       setStatus({ type: 'success', message: `Created group ${data.group.name}` });
-      setGroupForm({ name: '', sport: '' });
+      setGroupForm({ name: '' });
+      setCreateSportSelect('');
+      setCreateSportCustom('');
+      setCreateTeamSize(1);
       setPendingInvites([]);
       fetchMyGroups(user.id);
     } catch (e1) {
@@ -185,7 +268,7 @@ function App() {
       const res = await fetch(`/api/groups/${selectedGroup}`, {
         method: 'PATCH',
         headers: headersWithUser(user.id),
-        body: JSON.stringify({ name: groupDetails.name, sport: groupDetails.sport }),
+        body: JSON.stringify({ name: groupDetails.name, sport: groupDetails.sport, default_team_size: editTeamSize }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -222,32 +305,92 @@ function App() {
   const recordMatch = async (e) => {
     e.preventDefault();
     if (!user || !selectedGroup) return;
-    if (!winnerId || !loserId) {
-      setStatus({ type: 'error', message: 'Pick a winner and a loser' });
+    // Validate team selections
+    const a = teamAIds.map((x) => Number(x)).filter((x) => !!x);
+    const b = teamBIds.map((x) => Number(x)).filter((x) => !!x);
+    if (a.length !== teamSize || b.length !== teamSize) {
+      setStatus({ type: 'error', message: 'Select all players for both teams' });
       return;
     }
-    if (winnerId === loserId) {
-      setStatus({ type: 'error', message: 'Winner and loser must be different' });
+    const overlap = a.filter((id) => b.includes(id));
+    if (overlap.length > 0) {
+      setStatus({ type: 'error', message: 'A player cannot be on both teams' });
       return;
     }
     try {
       const res = await fetch(`/api/groups/${selectedGroup}/matches`, {
         method: 'POST',
         headers: headersWithUser(user.id),
-        body: JSON.stringify({ winner_id: Number(winnerId), loser_id: Number(loserId) }),
+        body: JSON.stringify(
+          isTie
+            ? { is_tie: true, playersA: a, playersB: b }
+            : { playersA: a, playersB: b, winner_team: Number(winnerTeam) }
+        ),
       });
       const data = await res.json();
       if (!res.ok) {
         setStatus({ type: 'error', message: data.error || 'Failed to record match' });
         return;
       }
-      setStatus({ type: 'success', message: 'Match recorded and ELO updated' });
-      setWinnerId('');
-      setLoserId('');
+      setStatus({ type: 'success', message: isTie ? 'Tie recorded and ELO updated' : 'Match recorded and ELO updated' });
+      setTeamAIds(Array.from({ length: teamSize }, () => ''));
+      setTeamBIds(Array.from({ length: teamSize }, () => ''));
+      setIsTie(false);
+      setWinnerTeam(1);
       fetchGroup(user.id, selectedGroup);
       fetchMyGroups(user.id);
     } catch (e1) {
       setStatus({ type: 'error', message: 'Network error recording match' });
+    }
+  };
+
+  const transferOwnership = async () => {
+    if (!user || !selectedGroup) return;
+    const id = Number(transferToId);
+    if (!id) {
+      setStatus({ type: 'error', message: 'Select a member to transfer to' });
+      return;
+    }
+    if (!window.confirm('Transfer ownership?')) return;
+    try {
+      const res = await fetch(`/api/groups/${selectedGroup}/transfer-ownership`, {
+        method: 'POST',
+        headers: headersWithUser(user.id),
+        body: JSON.stringify({ new_owner_id: id }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setStatus({ type: 'success', message: 'Ownership transferred' });
+        setTransferToId('');
+        fetchGroup(user.id, selectedGroup);
+        fetchMyGroups(user.id);
+      } else {
+        setStatus({ type: 'error', message: data.error || 'Failed to transfer ownership' });
+      }
+    } catch {
+      setStatus({ type: 'error', message: 'Network error' });
+    }
+  };
+
+  const leaveGroup = async () => {
+    if (!user || !selectedGroup) return;
+    if (!window.confirm('Leave this group?')) return;
+    try {
+      const res = await fetch(`/api/groups/${selectedGroup}/leave`, {
+        method: 'POST',
+        headers: headersWithUser(user.id),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setStatus({ type: 'success', message: 'Left group' });
+        setSelectedGroup(null);
+        setGroupDetails(null);
+        fetchMyGroups(user.id);
+      } else {
+        setStatus({ type: 'error', message: data.error || 'Failed to leave group' });
+      }
+    } catch {
+      setStatus({ type: 'error', message: 'Network error' });
     }
   };
 
@@ -331,7 +474,22 @@ function App() {
                   </div>
                   <div>
                     <label className="block text-sm text-slate-300">Group Sport</label>
-                    <input name="sport" value={groupForm.sport} onChange={(e) => setGroupForm((f) => ({ ...f, sport: e.target.value }))} required className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                    <div className="mt-1 grid grid-cols-1 gap-2">
+                      <select value={createSportSelect} onChange={(e) => setCreateSportSelect(e.target.value)} required className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-500">
+                        <option value="">Select a sport</option>
+                        {SPORT_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                      {createSportSelect === 'other' && (
+                        <input placeholder="Enter custom sport" value={createSportCustom} onChange={(e) => setCreateSportCustom(e.target.value)} className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm text-slate-300">Default Team Size</label>
+                    <input type="number" min={1} value={createTeamSize} onChange={(e) => setCreateTeamSize(e.target.value)} className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 focus:outline-none focus:ring-2 focus:ring-brand-500" />
+                    <p className="text-xs text-slate-500 mt-1">Auto-filled from sport; you can adjust.</p>
                   </div>
                   <div>
                     <label className="block text-sm text-slate-300">Invite by username</label>
@@ -401,7 +559,52 @@ function App() {
                     </div>
                     <div>
                       <label className="block text-sm text-slate-300">Sport</label>
-                      <input value={groupDetails.sport} onChange={(e) => setGroupDetails((gd) => ({ ...gd, sport: e.target.value }))} disabled={groupDetails.my_role !== 'owner'} className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60" />
+                      <div className="mt-1 grid grid-cols-1 gap-2">
+                        <select
+                          value={editSportSelect}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            setEditSportSelect(v);
+                            if (v !== 'other') {
+                              setGroupDetails((gd) => ({ ...gd, sport: v }));
+                              setEditCustomSport('');
+                            } else {
+                              // keep current custom value
+                              setGroupDetails((gd) => ({ ...gd, sport: editCustomSport }));
+                            }
+                          }}
+                          disabled={groupDetails.my_role !== 'owner'}
+                          className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60"
+                        >
+                          {SPORT_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                        {editSportSelect === 'other' && (
+                          <input
+                            placeholder="Enter custom sport"
+                            value={editCustomSport}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setEditCustomSport(val);
+                              setGroupDetails((gd) => ({ ...gd, sport: val }));
+                            }}
+                            disabled={groupDetails.my_role !== 'owner'}
+                            className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60"
+                          />
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm text-slate-300">Default Team Size</label>
+                      <input
+                        type="number"
+                        min={1}
+                        value={editTeamSize}
+                        onChange={(e) => setEditTeamSize(e.target.value)}
+                        disabled={groupDetails.my_role !== 'owner'}
+                        className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100 disabled:opacity-60"
+                      />
                     </div>
                     {groupDetails.my_role === 'owner' && (
                       <button onClick={updateGroup} className="px-4 py-2 rounded-md bg-brand-600 hover:bg-brand-500 text-white">Save</button>
@@ -431,33 +634,97 @@ function App() {
                       </div>
                     )}
 
-                    {/* Record Match */}
+                    {/* Record Match / Tie with Teams */}
                     {selectedGroup && (
                       <div>
                         <h4 className="font-semibold">Record Match</h4>
-                        <form onSubmit={recordMatch} className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2 items-end">
-                          <div>
-                            <label className="block text-sm text-slate-300">Winner</label>
-                            <select value={winnerId} onChange={(e) => setWinnerId(e.target.value)} className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100">
-                              <option value="">Select winner</option>
-                              {groupDetails.members?.map((m) => (
-                                <option key={m.id} value={m.id}>{m.username}</option>
-                              ))}
-                            </select>
+                        <form onSubmit={recordMatch} className="mt-2 space-y-3">
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-end">
+                            <div>
+                              <label className="block text-sm text-slate-300">Team Size</label>
+                              <input type="number" min={1} value={teamSize} onChange={(e) => {
+                                const ts = Math.max(1, Number(e.target.value || 1));
+                                setTeamSize(ts);
+                                setTeamAIds(Array.from({ length: ts }, (_, i) => teamAIds[i] || ''));
+                                setTeamBIds(Array.from({ length: ts }, (_, i) => teamBIds[i] || ''));
+                              }} className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100" />
+                              <p className="text-xs text-slate-500 mt-1">Defaults to group setting.</p>
+                            </div>
+                            <div className="sm:col-span-2 flex items-center gap-4">
+                              <label className="inline-flex items-center gap-2 text-slate-300">
+                                <input type="checkbox" checked={isTie} onChange={(e) => setIsTie(e.target.checked)} />
+                                Tie
+                              </label>
+                              {!isTie && (
+                                <div className="flex items-center gap-3 text-slate-300">
+                                  <span>Winner:</span>
+                                  <label className="inline-flex items-center gap-1">
+                                    <input type="radio" name="winnerTeam" value="1" checked={winnerTeam === 1} onChange={() => setWinnerTeam(1)} /> Team A
+                                  </label>
+                                  <label className="inline-flex items-center gap-1">
+                                    <input type="radio" name="winnerTeam" value="2" checked={winnerTeam === 2} onChange={() => setWinnerTeam(2)} /> Team B
+                                  </label>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                              <h5 className="font-medium">Team A</h5>
+                              <div className="mt-2 space-y-2">
+                                {Array.from({ length: teamSize }).map((_, idx) => (
+                                  <select key={idx} value={teamAIds[idx] || ''} onChange={(e) => setTeamAIds((arr) => { const cp = [...arr]; cp[idx] = e.target.value; return cp; })} className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100">
+                                    <option value="">Select player {idx + 1}</option>
+                                    {groupDetails.members?.map((m) => (
+                                      <option key={m.id} value={m.id}>{m.username}</option>
+                                    ))}
+                                  </select>
+                                ))}
+                              </div>
+                            </div>
+                            <div>
+                              <h5 className="font-medium">Team B</h5>
+                              <div className="mt-2 space-y-2">
+                                {Array.from({ length: teamSize }).map((_, idx) => (
+                                  <select key={idx} value={teamBIds[idx] || ''} onChange={(e) => setTeamBIds((arr) => { const cp = [...arr]; cp[idx] = e.target.value; return cp; })} className="w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100">
+                                    <option value="">Select player {idx + 1}</option>
+                                    {groupDetails.members?.map((m) => (
+                                      <option key={m.id} value={m.id}>{m.username}</option>
+                                    ))}
+                                  </select>
+                                ))}
+                              </div>
+                            </div>
                           </div>
                           <div>
-                            <label className="block text-sm text-slate-300">Loser</label>
-                            <select value={loserId} onChange={(e) => setLoserId(e.target.value)} className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100">
-                              <option value="">Select loser</option>
-                              {groupDetails.members?.map((m) => (
-                                <option key={m.id} value={m.id}>{m.username}</option>
-                              ))}
-                            </select>
-                          </div>
-                          <div>
-                            <button type="submit" className="w-full sm:w-auto px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white">Record</button>
+                            <button type="submit" className="px-4 py-2 rounded-md bg-emerald-600 hover:bg-emerald-500 text-white">Record</button>
                           </div>
                         </form>
+                      </div>
+                    )}
+
+                    {/* Ownership / Leave Controls */}
+                    {selectedGroup && groupDetails?.members?.length > 0 && (
+                      <div className="mt-6 space-y-3">
+                        {groupDetails.my_role === 'owner' && (
+                          <div className="flex flex-col sm:flex-row gap-2 items-end">
+                            <div className="flex-1">
+                              <label className="block text-sm text-slate-300">Transfer ownership to</label>
+                              <select value={transferToId} onChange={(e) => setTransferToId(e.target.value)} className="mt-1 w-full rounded-md bg-slate-800 border border-slate-700 px-3 py-2 text-slate-100">
+                                <option value="">Select member</option>
+                                {groupDetails.members
+                                  .filter((m) => m.id !== user.id)
+                                  .map((m) => (
+                                    <option key={m.id} value={m.id}>{m.username}</option>
+                                  ))}
+                              </select>
+                            </div>
+                            <button onClick={transferOwnership} className="px-4 py-2 rounded-md bg-amber-600 hover:bg-amber-500 text-white">Transfer Ownership</button>
+                          </div>
+                        )}
+                        <div>
+                          <button onClick={leaveGroup} className="px-4 py-2 rounded-md bg-rose-700 hover:bg-rose-600 text-white">Leave Group</button>
+                        </div>
                       </div>
                     )}
                   </div>

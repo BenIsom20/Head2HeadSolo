@@ -29,6 +29,8 @@ class Group(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(120), unique=True, nullable=False, index=True)
     sport = db.Column(db.String(80), nullable=False)
+    # Default number of players per team for this group's sport
+    default_team_size = db.Column(db.Integer, nullable=False, default=1)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     memberships = db.relationship("Membership", back_populates="group", cascade="all, delete-orphan")
@@ -94,4 +96,20 @@ class Match(db.Model):
     group_id = db.Column(db.Integer, db.ForeignKey("groups.id", ondelete="CASCADE"), nullable=False, index=True)
     winner_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     loser_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    # When true, this record represents a tie between winner_id and loser_id participants
+    is_tie = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class MatchParticipant(db.Model):
+    __tablename__ = "match_participants"
+
+    id = db.Column(db.Integer, primary_key=True)
+    match_id = db.Column(db.Integer, db.ForeignKey("matches.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    # Team index for this participant: 1 or 2
+    team = db.Column(db.Integer, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("match_id", "user_id", name="uq_match_participant_user"),
+    )

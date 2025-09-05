@@ -3,7 +3,7 @@ from sqlalchemy import or_
 from datetime import datetime
 
 from app import db
-from app.models import User, Group, Membership, Invite, Ranking, Match
+from app.models import User, Group, Membership, Invite, Ranking, Match, MatchParticipant
 
 
 bp = Blueprint('api', __name__)
@@ -114,6 +114,7 @@ def create_group():
     payload = request.get_json(silent=True) or {}
     name = (payload.get('name') or '').strip()
     sport = (payload.get('sport') or '').strip()
+    default_team_size = payload.get('default_team_size')
     invitees = payload.get('invitees') or []  # list of usernames
 
     if not name:
@@ -123,7 +124,15 @@ def create_group():
     if Group.query.filter_by(name=name).first():
         return jsonify({'ok': False, 'error': 'Group name already exists'}), 409
 
-    group = Group(name=name, sport=sport)
+    # Validate and set default team size (fallback to 1)
+    try:
+        dts = int(default_team_size) if default_team_size is not None else 1
+    except (TypeError, ValueError):
+        dts = 1
+    if dts < 1:
+        dts = 1
+
+    group = Group(name=name, sport=sport, default_team_size=dts)
     db.session.add(group)
     db.session.flush()
 
@@ -162,6 +171,7 @@ def create_group():
             'id': group.id,
             'name': group.name,
             'sport': group.sport,
+            'default_team_size': group.default_team_size,
         },
         'invites_created': created_invites,
     }), 201
@@ -220,6 +230,7 @@ def get_group(group_id: int):
             'id': group.id,
             'name': group.name,
             'sport': group.sport,
+            'default_team_size': group.default_team_size,
             'members': members_payload,
             'my_role': membership.role,
         },
@@ -240,6 +251,7 @@ def update_group(group_id: int):
     payload = request.get_json(silent=True) or {}
     new_name = payload.get('name')
     new_sport = payload.get('sport')
+    new_default_team_size = payload.get('default_team_size')
 
     if new_name is not None:
         new_name = new_name.strip()
@@ -255,8 +267,17 @@ def update_group(group_id: int):
             return jsonify({'ok': False, 'error': 'Sport cannot be empty'}), 400
         group.sport = new_sport
 
+    if new_default_team_size is not None:
+        try:
+            dts2 = int(new_default_team_size)
+        except (TypeError, ValueError):
+            return jsonify({'ok': False, 'error': 'default_team_size must be an integer'}), 400
+        if dts2 < 1:
+            return jsonify({'ok': False, 'error': 'default_team_size must be at least 1'}), 400
+        group.default_team_size = dts2
+
     db.session.commit()
-    return jsonify({'ok': True, 'group': {'id': group.id, 'name': group.name, 'sport': group.sport}}), 200
+    return jsonify({'ok': True, 'group': {'id': group.id, 'name': group.name, 'sport': group.sport, 'default_team_size': group.default_team_size}}), 200
 
 
 @bp.route('/groups/<int:group_id>/invites', methods=['POST'])
@@ -374,48 +395,243 @@ def record_match(group_id: int):
         return jsonify({'ok': False, 'error': 'Forbidden'}), 403
 
     payload = request.get_json(silent=True) or {}
-    winner_id = payload.get('winner_id')
-    loser_id = payload.get('loser_id')
-    if not isinstance(winner_id, int) or not isinstance(loser_id, int):
-        return jsonify({'ok': False, 'error': 'winner_id and loser_id are required'}), 400
-    if winner_id == loser_id:
-        return jsonify({'ok': False, 'error': 'Winner and loser must be different'}), 400
+    is_tie = bool(
+        payload.get('is_tie')
+        or payload.get('tie')
+        or (isinstance(payload.get('result'), str) and payload.get('result', '').strip().lower() == 'tie')
+    )
+    # Teams (arrays) support
+    players_a = payload.get('playersA') or payload.get('team_a') or payload.get('team1') or []
+    players_b = payload.get('playersB') or payload.get('team_b') or payload.get('team2') or []
+    if players_a and players_b:
+        # Validate arrays
+        if not isinstance(players_a, list) or not isinstance(players_b, list):
+            return jsonify({'ok': False, 'error': 'playersA and playersB must be arrays of user ids'}), 400
+        try:
+            team_a_ids = [int(x) for x in players_a]
+            team_b_ids = [int(x) for x in players_b]
+        except (TypeError, ValueError):
+            return jsonify({'ok': False, 'error': 'playersA/playersB must contain integers'}), 400
+        if len(team_a_ids) == 0 or len(team_b_ids) == 0:
+            return jsonify({'ok': False, 'error': 'Both teams must have at least one player'}), 400
+        if len(set(team_a_ids).intersection(set(team_b_ids))) > 0:
+            return jsonify({'ok': False, 'error': 'A player cannot be on both teams'}), 400
+        if len(team_a_ids) != len(team_b_ids):
+            return jsonify({'ok': False, 'error': 'Both teams must have the same number of players'}), 400
 
-    # Validate both are members
-    win_mem = Membership.query.filter_by(user_id=winner_id, group_id=group.id).first()
-    lose_mem = Membership.query.filter_by(user_id=loser_id, group_id=group.id).first()
-    if not win_mem or not lose_mem:
-        return jsonify({'ok': False, 'error': 'Both users must be members of the group'}), 400
+        # Validate all are members and load/create rankings
+        all_ids = team_a_ids + team_b_ids
+        for uid in all_ids:
+            if not Membership.query.filter_by(user_id=uid, group_id=group.id).first():
+                return jsonify({'ok': False, 'error': f'User {uid} is not a member of this group'}), 400
+        rankings = {}
+        for uid in all_ids:
+            r = Ranking.query.filter_by(user_id=uid, group_id=group.id).first()
+            if not r:
+                r = Ranking(user_id=uid, group_id=group.id, points=1000)
+                db.session.add(r)
+            rankings[uid] = r
 
-    # Load or create rankings
-    win_rank = Ranking.query.filter_by(user_id=winner_id, group_id=group.id).first()
-    if not win_rank:
-        win_rank = Ranking(user_id=winner_id, group_id=group.id, points=1000)
-        db.session.add(win_rank)
-    lose_rank = Ranking.query.filter_by(user_id=loser_id, group_id=group.id).first()
-    if not lose_rank:
-        lose_rank = Ranking(user_id=loser_id, group_id=group.id, points=1000)
-        db.session.add(lose_rank)
+        # Average team ratings
+        import statistics
+        ra = statistics.fmean([(rankings[uid].points or 1000) for uid in team_a_ids])
+        rb = statistics.fmean([(rankings[uid].points or 1000) for uid in team_b_ids])
+        k = 32.0
+        expected_a = 1.0 / (1.0 + 10.0 ** ((rb - ra) / 400.0))
+        expected_b = 1.0 / (1.0 + 10.0 ** ((ra - rb) / 400.0))
+        if is_tie:
+            score_a = 0.5
+            score_b = 0.5
+        else:
+            # If not tie, determine winner by explicit field or assume team A is winner when winner_team==1
+            winner_team = payload.get('winner_team')
+            if winner_team not in (1, 2, None):
+                return jsonify({'ok': False, 'error': 'winner_team must be 1 or 2 when using team arrays'}), 400
+            if winner_team is None:
+                # Fallback: require explicit since arrays provided
+                return jsonify({'ok': False, 'error': 'winner_team (1 or 2) is required when using team arrays'}), 400
+            score_a = 1.0 if winner_team == 1 else 0.0
+            score_b = 1.0 - score_a
 
-    ra = float(win_rank.points or 1000)
-    rb = float(lose_rank.points or 1000)
-    k = 32.0
-    expected_a = 1.0 / (1.0 + 10.0 ** ((rb - ra) / 400.0))
-    expected_b = 1.0 / (1.0 + 10.0 ** ((ra - rb) / 400.0))
-    # Winner score=1, loser score=0
-    new_ra = round(ra + k * (1.0 - expected_a))
-    new_rb = round(rb + k * (0.0 - expected_b))
+        # Compute deltas and distribute per member to keep rating pool balanced
+        delta_a = k * (score_a - expected_a)
+        delta_b = k * (score_b - expected_b)
+        per_a = round(delta_a / len(team_a_ids))
+        per_b = round(delta_b / len(team_b_ids))
 
-    win_rank.points = int(new_ra)
-    lose_rank.points = int(new_rb)
-    db.session.add(Match(group_id=group.id, winner_id=winner_id, loser_id=loser_id))
+        for uid in team_a_ids:
+            rankings[uid].points = int((rankings[uid].points or 1000) + per_a)
+        for uid in team_b_ids:
+            rankings[uid].points = int((rankings[uid].points or 1000) + per_b)
+
+        # Persist match and participants
+        if is_tie:
+            match = Match(group_id=group.id, winner_id=team_a_ids[0], loser_id=team_b_ids[0], is_tie=True)
+        else:
+            if score_a > score_b:
+                match = Match(group_id=group.id, winner_id=team_a_ids[0], loser_id=team_b_ids[0], is_tie=False)
+            else:
+                match = Match(group_id=group.id, winner_id=team_b_ids[0], loser_id=team_a_ids[0], is_tie=False)
+        db.session.add(match)
+        db.session.flush()
+        for uid in team_a_ids:
+            db.session.add(MatchParticipant(match_id=match.id, user_id=uid, team=1))
+        for uid in team_b_ids:
+            db.session.add(MatchParticipant(match_id=match.id, user_id=uid, team=2))
+        db.session.commit()
+
+        return jsonify({
+            'ok': True,
+            'tie': is_tie,
+            'team_a': [{'id': uid, 'elo': rankings[uid].points} for uid in team_a_ids],
+            'team_b': [{'id': uid, 'elo': rankings[uid].points} for uid in team_b_ids],
+        }), 201
+    # Fallback to 1v1 flow
+    if is_tie:
+        p1_id = payload.get('player1_id') if 'player1_id' in payload else payload.get('winner_id')
+        p2_id = payload.get('player2_id') if 'player2_id' in payload else payload.get('loser_id')
+        if not isinstance(p1_id, int) or not isinstance(p2_id, int):
+            return jsonify({'ok': False, 'error': 'player1_id and player2_id (or winner_id and loser_id) are required for ties'}), 400
+        if p1_id == p2_id:
+            return jsonify({'ok': False, 'error': 'Players must be different for a tie'}), 400
+
+        # Validate both are members
+        m1 = Membership.query.filter_by(user_id=p1_id, group_id=group.id).first()
+        m2 = Membership.query.filter_by(user_id=p2_id, group_id=group.id).first()
+        if not m1 or not m2:
+            return jsonify({'ok': False, 'error': 'Both users must be members of the group'}), 400
+
+        # Load or create rankings
+        r1 = Ranking.query.filter_by(user_id=p1_id, group_id=group.id).first()
+        if not r1:
+            r1 = Ranking(user_id=p1_id, group_id=group.id, points=1000)
+            db.session.add(r1)
+        r2 = Ranking.query.filter_by(user_id=p2_id, group_id=group.id).first()
+        if not r2:
+            r2 = Ranking(user_id=p2_id, group_id=group.id, points=1000)
+            db.session.add(r2)
+
+        ra = float(r1.points or 1000)
+        rb = float(r2.points or 1000)
+        k = 32.0
+        expected_a = 1.0 / (1.0 + 10.0 ** ((rb - ra) / 400.0))
+        expected_b = 1.0 / (1.0 + 10.0 ** ((ra - rb) / 400.0))
+        # Tie: both score 0.5
+        new_ra = round(ra + k * (0.5 - expected_a))
+        new_rb = round(rb + k * (0.5 - expected_b))
+
+        r1.points = int(new_ra)
+        r2.points = int(new_rb)
+        db.session.add(Match(group_id=group.id, winner_id=p1_id, loser_id=p2_id, is_tie=True))
+        db.session.commit()
+
+        return jsonify({
+            'ok': True,
+            'tie': True,
+            'player1': {'id': p1_id, 'elo': r1.points},
+            'player2': {'id': p2_id, 'elo': r2.points},
+        }), 201
+    else:
+        winner_id = payload.get('winner_id')
+        loser_id = payload.get('loser_id')
+        if not isinstance(winner_id, int) or not isinstance(loser_id, int):
+            return jsonify({'ok': False, 'error': 'winner_id and loser_id are required'}), 400
+        if winner_id == loser_id:
+            return jsonify({'ok': False, 'error': 'Winner and loser must be different'}), 400
+
+        # Validate both are members
+        win_mem = Membership.query.filter_by(user_id=winner_id, group_id=group.id).first()
+        lose_mem = Membership.query.filter_by(user_id=loser_id, group_id=group.id).first()
+        if not win_mem or not lose_mem:
+            return jsonify({'ok': False, 'error': 'Both users must be members of the group'}), 400
+
+        # Load or create rankings
+        win_rank = Ranking.query.filter_by(user_id=winner_id, group_id=group.id).first()
+        if not win_rank:
+            win_rank = Ranking(user_id=winner_id, group_id=group.id, points=1000)
+            db.session.add(win_rank)
+        lose_rank = Ranking.query.filter_by(user_id=loser_id, group_id=group.id).first()
+        if not lose_rank:
+            lose_rank = Ranking(user_id=loser_id, group_id=group.id, points=1000)
+            db.session.add(lose_rank)
+
+        ra = float(win_rank.points or 1000)
+        rb = float(lose_rank.points or 1000)
+        k = 32.0
+        expected_a = 1.0 / (1.0 + 10.0 ** ((rb - ra) / 400.0))
+        expected_b = 1.0 / (1.0 + 10.0 ** ((ra - rb) / 400.0))
+        # Winner score=1, loser score=0
+        new_ra = round(ra + k * (1.0 - expected_a))
+        new_rb = round(rb + k * (0.0 - expected_b))
+
+        win_rank.points = int(new_ra)
+        lose_rank.points = int(new_rb)
+        db.session.add(Match(group_id=group.id, winner_id=winner_id, loser_id=loser_id, is_tie=False))
+        db.session.commit()
+
+        return jsonify({
+            'ok': True,
+            'winner': {'id': winner_id, 'elo': win_rank.points},
+            'loser': {'id': loser_id, 'elo': lose_rank.points},
+        }), 201
+
+@bp.route('/groups/<int:group_id>/transfer-ownership', methods=['POST'])
+def transfer_ownership(group_id: int):
+    me = _current_user()
+    if not me:
+        return jsonify({'ok': False, 'error': 'Unauthorized'}), 401
+
+    group = Group.query.get_or_404(group_id)
+    my = Membership.query.filter_by(user_id=me.id, group_id=group.id).first()
+    if not my or my.role != 'owner':
+        return jsonify({'ok': False, 'error': 'Only owners can transfer ownership'}), 403
+
+    payload = request.get_json(silent=True) or {}
+    new_owner_id = payload.get('new_owner_id')
+    if not isinstance(new_owner_id, int):
+        return jsonify({'ok': False, 'error': 'new_owner_id is required'}), 400
+    if new_owner_id == me.id:
+        return jsonify({'ok': False, 'error': 'You already are the owner'}), 400
+
+    target = Membership.query.filter_by(user_id=new_owner_id, group_id=group.id).first()
+    if not target:
+        return jsonify({'ok': False, 'error': 'Target user is not a member of this group'}), 404
+
+    # Demote current owner and promote target
+    my.role = 'member'
+    target.role = 'owner'
     db.session.commit()
 
-    return jsonify({
-        'ok': True,
-        'winner': {'id': winner_id, 'elo': win_rank.points},
-        'loser': {'id': loser_id, 'elo': lose_rank.points},
-    }), 201
+    return jsonify({'ok': True, 'group_id': group.id, 'old_owner_id': me.id, 'new_owner_id': new_owner_id}), 200
+
+@bp.route('/groups/<int:group_id>/leave', methods=['POST'])
+def leave_group(group_id: int):
+    me = _current_user()
+    if not me:
+        return jsonify({'ok': False, 'error': 'Unauthorized'}), 401
+
+    group = Group.query.get_or_404(group_id)
+    my = Membership.query.filter_by(user_id=me.id, group_id=group.id).first()
+    if not my:
+        return jsonify({'ok': False, 'error': 'You are not a member of this group'}), 404
+
+    member_count = Membership.query.filter_by(group_id=group.id).count()
+    if my.role == 'owner' and member_count > 1:
+        return jsonify({'ok': False, 'error': 'Owner must transfer ownership before leaving'}), 400
+
+    if my.role == 'owner' and member_count == 1:
+        # Delete the group; cascades remove related records
+        db.session.delete(group)
+        db.session.commit()
+        return jsonify({'ok': True, 'group_deleted': True}), 200
+    else:
+        # Remove membership and the user's ranking for this group
+        rank = Ranking.query.filter_by(user_id=me.id, group_id=group.id).first()
+        if rank:
+            db.session.delete(rank)
+        db.session.delete(my)
+        db.session.commit()
+        return jsonify({'ok': True, 'left_group': True}), 200
 @bp.route('/compare', methods=['POST'])
 def compare():
     data = request.json
